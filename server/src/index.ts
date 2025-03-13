@@ -2,6 +2,14 @@
 import express from "express";
 import { createServer } from "http";
 import { Server, Socket } from "socket.io";
+import dotenv from "dotenv";
+import { chatService } from "./services/chatService";
+
+// Load environment variables
+dotenv.config();
+
+// Create Express app
+const app = express();
 
 // User and socket tracking
 interface UserSocket {
@@ -9,20 +17,12 @@ interface UserSocket {
   socket: Socket;
 }
 
-// In-memory storage
+// In-memory socket mappings (these still need to be in-memory)
 const userSockets = new Map<string, Socket>(); // userId -> socket
 const socketUsers = new Map<string, string>(); // socketId -> userId
-const globalChatHistory: {
-  senderId: string;
-  message: string;
-  timestamp: Date;
-}[] = [];
 
-// Track online users
-const onlineUsers = new Set<string>(); // Set of online userIds
-
-// Mock functions for authentication and database operations
-// In a real app, these would connect to your actual auth system and database
+// Mock functions for authentication
+// In a real app, these would connect to your actual auth system
 function isValidToken(token: string): boolean {
   console.log(`Validating token: ${token}`);
   // Mock implementation - replace with actual JWT verification
@@ -34,36 +34,10 @@ function extractUserId(token: string): string {
   return token.split("-")[0];
 }
 
-async function saveDirectMessage(
-  senderId: string,
-  recipientId: string,
-  message: string
-): Promise<void> {
-  // Mock implementation - replace with actual database call
-  console.log(`Storing message from ${senderId} to ${recipientId}: ${message}`);
-  // In a real app: await db.collection('directMessages').insertOne({...})
-}
-
 function findSocketByUserId(userId: string): Socket | undefined {
   return userSockets.get(userId);
 }
 
-function updateGlobalChatHistory(senderId: string, message: string): void {
-  globalChatHistory.push({ senderId, message, timestamp: new Date() });
-  if (globalChatHistory.length > 100) globalChatHistory.shift(); // Keep last 100
-}
-
-function getGlobalChatHistory() {
-  return globalChatHistory;
-}
-
-// Get list of online users
-function getOnlineUsers() {
-  console.log(`Current online users: ${Array.from(onlineUsers).join(", ")}`);
-  return Array.from(onlineUsers);
-}
-
-const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -76,55 +50,143 @@ const io = new Server(httpServer, {
 // Authentication middleware
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
+  const username = socket.handshake.auth.username;
 
   if (isValidToken(token)) {
     const userId = extractUserId(token);
     socket.data.userId = userId;
+    socket.data.username = username || userId; // Use username if provided, otherwise use userId
     next();
   } else {
     next(new Error("Authentication error"));
   }
 });
 
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   const userId = socket.data.userId;
-  console.log(`User connected: ${socket.id} (User ID: ${userId})`);
+  const username = socket.data.username;
+  console.log(
+    `User connected: ${socket.id} (User ID: ${userId}, Username: ${username})`
+  );
 
   // Store socket mapping
   userSockets.set(userId, socket);
   socketUsers.set(socket.id, userId);
 
-  // Add user to online users and broadcast
-  onlineUsers.add(userId);
-  console.log(
-    `User ${userId} added to online users. Total: ${onlineUsers.size}`
-  );
-  io.emit("onlineUsers", getOnlineUsers());
+  // Update user status in database with username
+  await chatService.upsertUser(userId, true, username);
+
+  // Get online users from database and broadcast
+  const onlineUsers = await chatService.getOnlineUsers();
+  io.emit("onlineUsers", onlineUsers);
 
   // Join global chat automatically
   socket.join("global");
-  socket.emit("globalHistory", getGlobalChatHistory());
+
+  // Get global chat history from database
+  const globalHistory = await chatService.getGlobalChatHistory();
+  socket.emit("globalHistory", globalHistory);
+
+  // Debug event to check message counts
+  socket.on("debug", async (data) => {
+    try {
+      console.log("Debug request received:", data);
+
+      if (data.type === "messageCounts") {
+        const counts = await chatService.debugGetMessagesByType();
+        socket.emit("debugResult", { type: "messageCounts", counts });
+      } else if (data.type === "directMessages" && data.otherUserId) {
+        const messages = await chatService.getDirectMessageHistory(
+          userId,
+          data.otherUserId
+        );
+        socket.emit("debugResult", {
+          type: "directMessages",
+          otherUserId: data.otherUserId,
+          count: messages.length,
+          messages,
+        });
+
+        // Also log the SQL query parameters for debugging
+        console.log(
+          `Debug direct messages between ${userId} and ${data.otherUserId}`
+        );
+        console.log(`Found ${messages.length} messages`);
+      }
+    } catch (error) {
+      console.error("Error in debug event:", error);
+      socket.emit("debugResult", { error: "Debug operation failed" });
+    }
+  });
 
   // Handle direct messages
   socket.on("directMessage", async ({ recipientId, message }) => {
     const senderId = socket.data.userId;
+    const senderUsername = socket.data.username;
+    console.log(
+      `User ${senderId} (${senderUsername}) sending direct message to ${recipientId}: ${message}`
+    );
 
-    // Save message to database (for history and offline delivery)
-    await saveDirectMessage(senderId, recipientId, message);
-
-    // Forward to recipient if online
-    const recipientSocket = findSocketByUserId(recipientId);
-    if (recipientSocket) {
-      recipientSocket.emit("directMessage", {
+    try {
+      // Save message to database
+      const savedMessage = await chatService.saveDirectMessage(
         senderId,
         recipientId,
-        message,
-        timestamp: new Date(),
-      });
-    }
+        message
+      );
 
-    // Confirm delivery to sender
-    socket.emit("messageSent", { recipientId, message });
+      if (savedMessage) {
+        console.log(`Message saved to database with ID: ${savedMessage.id}`);
+      } else {
+        console.warn(`Failed to save message to database`);
+      }
+
+      // Forward to recipient if online
+      const recipientSocket = findSocketByUserId(recipientId);
+      if (recipientSocket) {
+        console.log(`Recipient ${recipientId} is online, forwarding message`);
+        recipientSocket.emit("directMessage", {
+          senderId,
+          senderUsername,
+          recipientId,
+          message,
+          timestamp: new Date(),
+        });
+      } else {
+        console.log(
+          `Recipient ${recipientId} is offline, message stored for later delivery`
+        );
+      }
+
+      // Confirm delivery to sender
+      socket.emit("messageSent", { recipientId, message });
+    } catch (error) {
+      console.error("Error sending direct message:", error);
+      socket.emit("error", { message: "Failed to send message" });
+    }
+  });
+
+  // Handle direct message history request
+  socket.on("getDirectMessageHistory", async ({ otherUserId }) => {
+    console.log(
+      `User ${userId} requested direct message history with ${otherUserId}`
+    );
+
+    try {
+      const history = await chatService.getDirectMessageHistory(
+        userId,
+        otherUserId
+      );
+
+      console.log(
+        `Found ${history.length} messages between ${userId} and ${otherUserId}`
+      );
+
+      socket.emit("directMessageHistory", { otherUserId, messages: history });
+    } catch (error) {
+      console.error("Error getting direct message history:", error);
+      socket.emit("error", { message: "Failed to get message history" });
+    }
   });
 
   // Handle room operations
@@ -134,14 +196,25 @@ io.on("connection", (socket) => {
     io.to(roomId).emit("userJoined", { userId: socket.data.userId, roomId });
   });
 
-  socket.on("roomMessage", ({ roomId, message }) => {
+  socket.on("roomMessage", async ({ roomId, message }) => {
+    const senderId = socket.data.userId;
+    const senderUsername = socket.data.username;
+
+    // Save room message to database
+    await chatService.saveRoomMessage(senderId, roomId, message);
+
     io.to(roomId).emit("roomMessage", {
-      senderId: socket.data.userId,
+      senderId,
+      senderUsername,
       roomId,
       message,
       timestamp: new Date(),
     });
-    // In a real app, store room messages in database
+  });
+
+  socket.on("getRoomHistory", async ({ roomId }) => {
+    const history = await chatService.getRoomMessageHistory(roomId);
+    socket.emit("roomHistory", { roomId, messages: history });
   });
 
   socket.on("leaveRoom", ({ roomId }) => {
@@ -150,26 +223,32 @@ io.on("connection", (socket) => {
   });
 
   // Handle global chat
-  socket.on("globalMessage", ({ message }) => {
+  socket.on("globalMessage", async ({ message }) => {
     const senderId = socket.data.userId;
+    const senderUsername = socket.data.username;
+
+    // Save global message to database
+    await chatService.saveGlobalMessage(senderId, message);
+
     const messageData = {
       senderId,
+      senderUsername,
       message,
       timestamp: new Date(),
     };
 
     io.to("global").emit("globalMessage", messageData);
-    updateGlobalChatHistory(senderId, message);
   });
 
   // Handle request for online users
-  socket.on("getOnlineUsers", () => {
+  socket.on("getOnlineUsers", async () => {
     console.log(`User ${userId} requested online users list`);
-    socket.emit("onlineUsers", getOnlineUsers());
+    const onlineUsers = await chatService.getOnlineUsers();
+    socket.emit("onlineUsers", onlineUsers);
   });
 
   // Handle disconnection
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     const userId = socketUsers.get(socket.id);
     console.log(`User disconnected: ${socket.id} (User ID: ${userId})`);
 
@@ -177,13 +256,16 @@ io.on("connection", (socket) => {
       userSockets.delete(userId);
       socketUsers.delete(socket.id);
 
-      // Remove from online users and broadcast update
-      onlineUsers.delete(userId);
-      console.log(
-        `User ${userId} removed from online users. Total: ${onlineUsers.size}`
-      );
+      // Update user status in database
+      await chatService.setUserOffline(userId);
+
+      // Get updated online users and broadcast
+      const onlineUsers = await chatService.getOnlineUsers();
       io.emit("userOffline", { userId });
-      io.emit("onlineUsers", getOnlineUsers());
+      io.emit(
+        "onlineUsers",
+        onlineUsers.map((user) => user.id)
+      );
     }
   });
 
@@ -193,6 +275,7 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(3000, "0.0.0.0", () =>
-  console.log("Server running on 0.0.0.0:3000 (accessible from Docker)")
+const PORT = parseInt(process.env.PORT || "3000", 10);
+httpServer.listen(PORT, "0.0.0.0", () =>
+  console.log(`Server running on 0.0.0.0:${PORT} (accessible from Docker)`)
 );
