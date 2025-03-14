@@ -73,7 +73,7 @@ function App() {
   // Online users state
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
-  const [showOnlineUsers, setShowOnlineUsers] = useState(false);
+  const [_showOnlineUsers, setShowOnlineUsers] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
 
   // Unread messages state - track unread messages by user ID
