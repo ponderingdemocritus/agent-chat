@@ -4,7 +4,7 @@ class ChatClient {
   socket: Socket; // Changed to public for direct access from App component
 
   constructor(token: string, username?: string) {
-    this.socket = io("http://localhost:3000", {
+    this.socket = io(import.meta.env.VITE_PUBLIC_CHAT_URL, {
       auth: {
         token,
         username,
