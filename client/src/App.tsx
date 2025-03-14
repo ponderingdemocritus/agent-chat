@@ -758,7 +758,7 @@ function App() {
 
                     {/* Messages from this sender */}
                     <div className="pl-8 space-y-1">
-                      {group.messages.map((msg, msgIndex) => (
+                      {group.messages.map((msg, _msgIndex) => (
                         <div key={msg.id} className="flex flex-col">
                           <div
                             className={`rounded-lg  px-3 inline-block ${
