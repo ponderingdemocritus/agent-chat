@@ -3,8 +3,28 @@ import ChatClient from "./chat";
 import "./App.css";
 import { Button } from "./components/ui/button";
 
-const initialUserId = "1231231231231";
-const initialToken = "1231231231231-jwt-token-1231231231231";
+// Function to generate deterministic userID and token from username
+const generateUserCredentials = (username: string) => {
+  // Simple hash function to convert username to a numeric value
+  const hash = (str: string) => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash).toString();
+  };
+
+  const userId = hash(username);
+  const token = `${userId}-jwt-token-${hash(username + "salt")}`;
+
+  return { userId, token };
+};
+
+// Default values for initial state (will be replaced once username is set)
+const initialUserId = "";
+const initialToken = "";
 
 // Message type definition
 interface Message {
@@ -34,8 +54,8 @@ interface Room {
 
 function App() {
   // User state
-  const [userId] = useState<string>(initialUserId);
-  const [userToken] = useState<string>(initialToken);
+  const [userId, setUserId] = useState<string>(initialUserId);
+  const [userToken, setUserToken] = useState<string>(initialToken);
   const [username, setUsername] = useState<string>("");
   const [isUsernameSet, setIsUsernameSet] = useState<boolean>(false);
 
@@ -65,6 +85,21 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Reference for top of messages (for global chat)
   const messagesTopRef = useRef<HTMLDivElement>(null);
+
+  // Handle username submission
+  const handleUsernameSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim()) return;
+
+    // Generate deterministic userID and token from username
+    const { userId: generatedUserId, token: generatedToken } =
+      generateUserCredentials(username);
+
+    // Set the user credentials
+    setUserId(generatedUserId);
+    setUserToken(generatedToken);
+    setIsUsernameSet(true);
+  };
 
   // Initialize chat client after username is set
   useEffect(() => {
@@ -413,13 +448,6 @@ function App() {
     }
   };
 
-  // Handle username submission
-  const handleUsernameSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username.trim()) return;
-    setIsUsernameSet(true);
-  };
-
   // If username is not set, show username form
   if (!isUsernameSet) {
     return (
@@ -614,6 +642,8 @@ function App() {
             onClick={() => {
               setIsUsernameSet(false);
               setUsername("");
+              setUserId(initialUserId);
+              setUserToken(initialToken);
               setChatClient(null);
               setMessages([]);
               setActiveTab("global");
