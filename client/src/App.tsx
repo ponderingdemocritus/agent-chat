@@ -3,21 +3,6 @@ import ChatClient from "./chat";
 import "./App.css";
 import { Button } from "./components/ui/button";
 
-// Function to generate a random user ID and token
-// const generateRandomUser = () => {
-//   const randomId = Math.floor(Math.random() * 10000)
-//     .toString()
-//     .padStart(4, "0");
-//   const userId = `user${randomId}`;
-//   const token = `${userId}-jwt-token-${Math.random()
-//     .toString(36)
-//     .substring(2, 10)}`;
-//   return { userId, token };
-// };
-
-// // Generate random user on initial load
-// const { userId: initialUserId, token: initialToken } = generateRandomUser();
-
 const initialUserId = "1231231231231";
 const initialToken = "1231231231231-jwt-token-1231231231231";
 
@@ -40,6 +25,13 @@ interface User {
   is_online?: boolean;
 }
 
+// Room type definition
+interface Room {
+  id: string;
+  name?: string;
+  userCount?: number;
+}
+
 function App() {
   // User state
   const [userId] = useState<string>(initialUserId);
@@ -60,8 +52,14 @@ function App() {
 
   // Online users state
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
+  const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [showOnlineUsers, setShowOnlineUsers] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+
+  // Unread messages state - track unread messages by user ID
+  const [unreadMessages, setUnreadMessages] = useState<Record<string, number>>(
+    {}
+  );
 
   // Auto-scroll to bottom of messages
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -101,6 +99,19 @@ function App() {
         timestamp: timestamp || new Date(),
         type: "direct",
       });
+
+      // If this is a message TO the current user FROM someone else,
+      // and we're not currently viewing that conversation, increment unread count
+      if (
+        senderId !== userId &&
+        actualRecipientId === userId &&
+        directMessageRecipient !== senderId
+      ) {
+        setUnreadMessages((prev) => ({
+          ...prev,
+          [senderId]: (prev[senderId] || 0) + 1,
+        }));
+      }
     };
 
     const handleRoomMessage = ({
@@ -141,6 +152,24 @@ function App() {
     const handleOnlineUsers = (users: User[]) => {
       console.log("Received online users:", users);
       setOnlineUsers(users);
+    };
+
+    // Handle available rooms updates
+    const handleAvailableRooms = (rooms: Room[]) => {
+      console.log("Received available rooms:", JSON.stringify(rooms));
+      console.log(
+        "Room IDs:",
+        rooms.map((room) => room.id)
+      );
+      console.log(
+        "Current state of availableRooms:",
+        JSON.stringify(availableRooms)
+      );
+      console.log(
+        "Room IDs in current state:",
+        availableRooms.map((room) => room.id)
+      );
+      setAvailableRooms(rooms);
     };
 
     // Override the console.log implementations in ChatClient with our UI handlers
@@ -211,6 +240,14 @@ function App() {
             // Add the new history messages
             return [...filteredMessages, ...formattedMessages];
           });
+
+          // If we're viewing this user's messages, clear their unread count
+          if (directMessageRecipient === otherUserId) {
+            setUnreadMessages((prev) => ({
+              ...prev,
+              [otherUserId]: 0,
+            }));
+          }
         }
       }
     );
@@ -218,13 +255,48 @@ function App() {
     // Handle online users updates
     client.socket.on("onlineUsers", handleOnlineUsers);
 
-    // Manually request online users
-    client.getOnlineUsers();
+    // Handle available rooms updates
+    client.socket.on("availableRooms", handleAvailableRooms);
 
-    // Set up an interval to periodically request online users
-    const onlineUsersInterval = setInterval(() => {
+    // Add handler for room history
+    client.socket.on("roomHistory", ({ roomId, messages: historyMessages }) => {
+      console.log(`Received room history for ${roomId}:`, historyMessages);
+
+      if (historyMessages && Array.isArray(historyMessages)) {
+        const formattedMessages = historyMessages.map((msg: any) => ({
+          id: msg.id || Date.now() + Math.random().toString(),
+          senderId: msg.sender_id,
+          senderUsername: msg.username,
+          message: msg.message,
+          timestamp: new Date(msg.created_at),
+          type: "room" as const,
+          roomId: msg.room_id,
+        }));
+
+        console.log("Formatted room messages:", formattedMessages);
+
+        // Replace existing room messages
+        setMessages((prev) => {
+          // Filter out existing messages for this room
+          const filteredMessages = prev.filter(
+            (msg) => !(msg.type === "room" && msg.roomId === roomId)
+          );
+
+          // Add the new history messages
+          return [...filteredMessages, ...formattedMessages];
+        });
+      }
+    });
+
+    // Manually request online users and available rooms
+    client.getOnlineUsers();
+    client.getRooms();
+
+    // Set up an interval to periodically request online users and rooms
+    const updateInterval = setInterval(() => {
       if (client) {
         client.getOnlineUsers();
+        client.getRooms();
       }
     }, 10000); // Request every 10 seconds
 
@@ -234,10 +306,13 @@ function App() {
       client.socket.off("roomMessage", handleRoomMessage);
       client.socket.off("globalMessage", handleGlobalMessage);
       client.socket.off("globalHistory");
+      client.socket.off("directMessageHistory");
+      client.socket.off("roomHistory");
       client.socket.off("onlineUsers", handleOnlineUsers);
+      client.socket.off("availableRooms", handleAvailableRooms);
 
       // Clear interval
-      clearInterval(onlineUsersInterval);
+      clearInterval(updateInterval);
     };
   }, [userToken, username, isUsernameSet]);
 
@@ -299,7 +374,23 @@ function App() {
     chatClient.joinRoom(newRoomId);
     setActiveRoom(newRoomId);
     setActiveTab("room");
+
+    // Request room history
+    chatClient.getRoomHistory(newRoomId);
+
     setNewRoomId("");
+  };
+
+  // Join a room from the sidebar
+  const joinRoomFromSidebar = (roomId: string) => {
+    if (!chatClient) return;
+
+    chatClient.joinRoom(roomId);
+    setActiveRoom(roomId);
+    setActiveTab("room");
+
+    // Request room history
+    chatClient.getRoomHistory(roomId);
   };
 
   // Set direct message recipient from online users list
@@ -308,6 +399,12 @@ function App() {
     setDirectMessageRecipient(userId);
     setActiveTab("direct");
     setShowOnlineUsers(false);
+
+    // Clear unread messages for this user
+    setUnreadMessages((prev) => ({
+      ...prev,
+      [userId]: 0,
+    }));
 
     // Request message history with this user
     if (chatClient) {
@@ -390,9 +487,65 @@ function App() {
       {/* Online Users Sidebar */}
       {sidebarVisible && (
         <div className="w-64 h-full bg-black text-gray-200 p-4 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-900">
+          {/* Rooms Section */}
+          <div className="mb-6">
+            <h2 className="text-xl font-bold mb-4">Rooms</h2>
+            <div className="overflow-y-auto">
+              {availableRooms.length === 0 ? (
+                <p className="text-gray-400 text-center">No active rooms</p>
+              ) : (
+                <ul className="space-y-1">
+                  {/* Debug logging */}
+                  {(() => {
+                    console.log("Rendering rooms:", availableRooms);
+                    return null;
+                  })()}
+                  {availableRooms.map((room) => {
+                    console.log("Rendering room:", room);
+                    return (
+                      <li
+                        key={room.id}
+                        className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
+                          room.id === activeRoom ? "bg-gray-700" : ""
+                        }`}
+                        onClick={() => joinRoomFromSidebar(room.id)}
+                      >
+                        <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
+                        <span className="text-sm truncate">
+                          {room.name || room.id}
+                        </span>
+                        {room.userCount && (
+                          <span className="bg-gray-600 px-2 py-0.5 rounded-full text-xs">
+                            {room.userCount}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <form onSubmit={joinRoom} className="mt-2 flex space-x-1">
+              <input
+                type="text"
+                placeholder="Join or Create"
+                value={newRoomId}
+                onChange={(e) => setNewRoomId(e.target.value)}
+                className="flex-1 p-1 text-sm border rounded bg-gray-800 border-gray-900 text-white"
+              />
+              <button
+                type="submit"
+                className="px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm"
+              >
+                +
+              </button>
+            </form>
+          </div>
+
+          {/* Users Section */}
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold">Online Users</h2>
-            <span className="bg-green-600 px-2 py-1 rounded-full text-sm">
+            <span className="bg-green-600 px-3 py-1 rounded-full text-sm">
               {onlineUsers.length}
             </span>
             <button
@@ -410,7 +563,7 @@ function App() {
                 {onlineUsers.map((user) => (
                   <li
                     key={user.id}
-                    className={`flex items-center p-2 rounded cursor-pointer hover:bg-gray-700 ${
+                    className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
                       user.id === userId ? "bg-gray-700" : ""
                     }`}
                     onClick={() =>
@@ -418,9 +571,15 @@ function App() {
                     }
                   >
                     <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-                    <span>
+                    <span className="text-sm truncate">
                       {user.username} {user.id === userId && "(You)"}
                     </span>
+                    {/* Unread message notification badge */}
+                    {user.id !== userId && unreadMessages[user.id] > 0 && (
+                      <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                        {unreadMessages[user.id]}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -432,7 +591,37 @@ function App() {
       {/* Main Chat Area */}
       <div className="flex flex-col flex-grow h-full overflow-hidden">
         <div className="bg-black text-white p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-900">
-          <h1 className="text-xl font-bold">Game Chat</h1>
+          <h1 className="text-xl font-bold">
+            {activeTab === "global"
+              ? "Global Chat"
+              : activeTab === "direct" && directMessageRecipient
+              ? `Chat with ${
+                  onlineUsers.find((user) => user.id === directMessageRecipient)
+                    ?.username || directMessageRecipient
+                }`
+              : activeTab === "room" && activeRoom
+              ? `Room: ${
+                  availableRooms.find((room) => room.id === activeRoom)?.name ||
+                  activeRoom
+                }`
+              : "Game Chat"}
+          </h1>
+          <p className="text-gray-400">
+            Logged in as: <span className="text-gray-200">{username}</span>{" "}
+          </p>
+          <Button
+            variant={"destructive"}
+            onClick={() => {
+              setIsUsernameSet(false);
+              setUsername("");
+              setChatClient(null);
+              setMessages([]);
+              setActiveTab("global");
+              setUnreadMessages({});
+            }}
+          >
+            Logout
+          </Button>
           {!sidebarVisible && (
             <button
               className="px-4 py-2 bg-indigo-600 rounded hover:bg-indigo-700"
@@ -442,156 +631,6 @@ function App() {
             </button>
           )}
         </div>
-
-        {/* Chat tabs */}
-        <div className="flex border-b border-gray-900 flex-shrink-0 bg-black">
-          <button
-            className={`px-4 py-2 ${
-              activeTab === "global"
-                ? "border-b-2 border-indigo-500 text-indigo-400"
-                : "text-gray-400 hover:text-gray-200"
-            }`}
-            onClick={() => {
-              setActiveTab("global");
-              if (directMessageRecipient) setDirectMessageRecipient("");
-            }}
-          >
-            Global
-          </button>
-          <button
-            className={`px-4 py-2 ${
-              activeTab === "direct"
-                ? "border-b-2 border-indigo-500 text-indigo-400"
-                : "text-gray-400 hover:text-gray-200"
-            }`}
-            onClick={() => setActiveTab("direct")}
-          >
-            Direct Messages
-          </button>
-          <button
-            className={`px-4 py-2 ${
-              activeTab === "room"
-                ? "border-b-2 border-indigo-500 text-indigo-400"
-                : "text-gray-400 hover:text-gray-200"
-            }`}
-            onClick={() => {
-              setActiveTab("room");
-              if (directMessageRecipient) setDirectMessageRecipient("");
-            }}
-          >
-            Rooms
-          </button>
-        </div>
-
-        {/* Tab-specific controls */}
-        {activeTab === "direct" && (
-          <div className=" border-b border-gray-900 flex-shrink-0 bg-black">
-            {/* <input
-              type="text"
-              placeholder="Recipient User ID"
-              value={directMessageRecipient}
-              onChange={(e) => setDirectMessageRecipient(e.target.value)}
-              onBlur={() => {
-                if (directMessageRecipient && chatClient) {
-                  chatClient.getDirectMessageHistory(directMessageRecipient);
-                }
-              }}
-              className="w-full p-2 border rounded bg-black border-gray-900 text-white"
-            /> */}
-            {/* {!sidebarVisible && (
-              <button
-                className="mt-2 px-4 py-2 bg-black rounded hover:bg-gray-600 text-gray-200"
-                onClick={() => setShowOnlineUsers(!showOnlineUsers)}
-              >
-                {showOnlineUsers ? "Hide Online Users" : "Show Online Users"}
-              </button>
-            )} */}
-
-            {/* {directMessageRecipient && (
-              <div className="mt-4 flex items-center justify-between">
-                <p className="text-gray-300">
-                  Chatting with: <strong>{directMessageRecipient}</strong>
-                </p>
-                <div className="space-x-2">
-                  <Button
-                    variant={"destructive"}
-                    onClick={() => setDirectMessageRecipient("")}
-                  >
-                    Clear
-                  </Button>
-                  <Button
-                    variant={"default"}
-                    onClick={() => {
-                      if (chatClient && directMessageRecipient) {
-                        chatClient.getDirectMessageHistory(
-                          directMessageRecipient
-                        );
-                      }
-                    }}
-                  >
-                    Refresh History
-                  </Button>
-                </div>
-              </div>
-            )} */}
-
-            {/* Online Users Dropdown */}
-            {/* {sidebarVisible && (
-              <div className="mt-4 p-4 bg-black rounded shadow-lg max-h-60 overflow-y-auto border border-gray-900">
-                <h3 className="text-lg font-semibold mb-2 text-gray-200">
-                  Online Users ({onlineUsers.length})
-                </h3>
-                {onlineUsers.length === 0 ? (
-                  <p className="text-gray-400">No users online</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {onlineUsers.map((user) => (
-                      <li
-                        key={user.id}
-                        onClick={() => selectRecipient(user.id)}
-                        className="p-2 hover:bg-gray-600 cursor-pointer rounded text-gray-200"
-                      >
-                        {user.username} {user.id === userId && "(You)"}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )} */}
-          </div>
-        )}
-
-        {activeTab === "room" && (
-          <div className="p-4 border-b border-gray-900 flex-shrink-0 bg-black">
-            {activeRoom ? (
-              <div className="flex items-center justify-between">
-                <p className="text-gray-300">Current Room: {activeRoom}</p>
-                <button
-                  onClick={() => setActiveRoom("")}
-                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-                >
-                  Leave Room
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={joinRoom} className="flex space-x-2">
-                <input
-                  type="text"
-                  placeholder="Room ID"
-                  value={newRoomId}
-                  onChange={(e) => setNewRoomId(e.target.value)}
-                  className="flex-1 p-2 border rounded bg-gray-700 border-gray-900 text-white"
-                />
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                >
-                  Join Room
-                </button>
-              </form>
-            )}
-          </div>
-        )}
 
         {/* Messages display */}
         <div
@@ -700,14 +739,6 @@ function App() {
                           >
                             {msg.message}
                           </div>
-
-                          {/* Only show timestamp for the last message if there are multiple messages */}
-                          {/* {msgIndex === group.messages.length - 1 &&
-                            group.messages.length > 1 && (
-                              <span className="text-xs text-gray-500 mt-1 ml-1">
-                                {new Date(msg.timestamp).toLocaleTimeString()}
-                              </span>
-                            )} */}
                         </div>
                       ))}
                     </div>
@@ -739,43 +770,6 @@ function App() {
             </button>
           </div>
         </form>
-
-        {/* User info */}
-        <div className="p-3 bg-black border-t border-gray-900 flex-shrink-0 text-sm">
-          <p className="text-gray-400">
-            Logged in as: <span className="text-gray-200">{userId}</span>{" "}
-            <span className="text-xs text-gray-500">
-              (Use this ID for direct messages from other windows)
-            </span>
-          </p>
-          {/* {chatClient && (
-            <button
-              className="mt-2 px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 text-gray-300 text-sm"
-              onClick={() => {
-                chatClient.debug("messageCounts");
-                if (activeTab === "direct" && directMessageRecipient) {
-                  chatClient.debug("directMessages", {
-                    otherUserId: directMessageRecipient,
-                  });
-                  console.log("Current messages in state:", messages);
-                  console.log("Filtered messages:", filteredMessages);
-                  const relevantMessages = messages.filter(
-                    (msg) =>
-                      msg.type === "direct" &&
-                      (msg.senderId === directMessageRecipient ||
-                        msg.recipientId === directMessageRecipient)
-                  );
-                  console.log(
-                    "Messages with this recipient:",
-                    relevantMessages
-                  );
-                }
-              }}
-            >
-              Debug Messages
-            </button>
-          )} */}
-        </div>
       </div>
     </div>
   );

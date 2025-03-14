@@ -67,10 +67,21 @@ class ChatClient {
     this.socket.emit("getOnlineUsers");
   }
 
+  // Add method to get available rooms
+  getRooms() {
+    this.socket.emit("getRooms");
+  }
+
   // Add method to get direct message history
   getDirectMessageHistory(otherUserId: string) {
     console.log(`Requesting direct message history with ${otherUserId}`);
     this.socket.emit("getDirectMessageHistory", { otherUserId });
+  }
+
+  // Add method to get room history
+  getRoomHistory(roomId: string) {
+    console.log(`Requesting room history for ${roomId}`);
+    this.socket.emit("getRoomHistory", { roomId });
   }
 
   // Debug method to check message counts and direct messages

@@ -203,6 +203,10 @@ io.on("connection", async (socket) => {
     // Save room message to database
     await chatService.saveRoomMessage(senderId, roomId, message);
 
+    console.log(
+      `Room message ${message} sent to room ${roomId} by ${senderId} (${senderUsername})`
+    );
+
     io.to(roomId).emit("roomMessage", {
       senderId,
       senderUsername,
@@ -245,6 +249,16 @@ io.on("connection", async (socket) => {
     console.log(`User ${userId} requested online users list`);
     const onlineUsers = await chatService.getOnlineUsers();
     socket.emit("onlineUsers", onlineUsers);
+  });
+
+  // Handle request for available rooms
+  socket.on("getRooms", async () => {
+    console.log(`User ${userId} requested available rooms list`);
+    // Get rooms from database
+    const availableRooms = await chatService.getAvailableRooms();
+
+    console.log(`Available rooms: ${JSON.stringify(availableRooms)}`);
+    socket.emit("availableRooms", availableRooms);
   });
 
   // Handle disconnection
