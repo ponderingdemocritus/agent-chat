@@ -298,37 +298,6 @@ export const chatService = {
 
     console.log("Unique room IDs (after string conversion):", uniqueRoomIds);
 
-    // Third approach: Use a direct SQL query to get distinct room_ids
-    try {
-      const { data: sqlData, error: sqlError } = await supabase.rpc(
-        "get_distinct_room_ids"
-      );
-
-      if (sqlError) {
-        console.error("Error executing SQL for distinct room IDs:", sqlError);
-      } else {
-        console.log("SQL query result for distinct room IDs:", sqlData);
-      }
-    } catch (err) {
-      console.error("Exception executing SQL query:", err);
-
-      // Try a simpler query if the RPC fails
-      const { data: directData, error: directError } = await supabase
-        .from("messages")
-        .select("room_id")
-        .not("room_id", "is", null);
-
-      if (directError) {
-        console.error("Error with direct query:", directError);
-      } else {
-        const allRoomIds = directData.map((item) => String(item.room_id));
-        console.log("All room IDs from direct query:", allRoomIds);
-        console.log("Unique room IDs from direct query:", [
-          ...new Set(allRoomIds),
-        ]);
-      }
-    }
-
     // For now, we'll return a simple array of room objects
     // In a real app, you would query a rooms table with more details
     const rooms = uniqueRoomIds.map((roomId) => ({
