@@ -205,14 +205,7 @@ function App() {
             (msg.senderId === directMessageRecipient &&
               (msg.recipientId === userId || msg.recipientId === undefined)));
 
-        // Debug logging
-        console.log(
-          `Filtering DM: ${msg.senderId} -> ${msg.recipientId}, relevant: ${isRelevantMessage}`
-        );
-        console.log(
-          `Current user: ${userId}, Selected recipient: ${directMessageRecipient}`
-        );
-
+        // Debug logging removed
         return isRelevantMessage;
       }
       if (activeTab === "room")
@@ -323,6 +316,15 @@ function App() {
       switch (activeTab) {
         case "global":
           chatClient.sendGlobalMessage(message);
+          // Add to our local messages for immediate feedback
+          addMessage({
+            id: Date.now().toString(),
+            senderId: userId,
+            senderUsername: username,
+            message: message,
+            timestamp: new Date(),
+            type: "global",
+          });
           break;
         case "direct":
           if (directMessageRecipient) {
@@ -342,6 +344,16 @@ function App() {
         case "room":
           if (activeRoom) {
             chatClient.sendRoomMessage(activeRoom, message);
+            // Add to our local messages for immediate feedback
+            addMessage({
+              id: Date.now().toString(),
+              senderId: userId,
+              senderUsername: username,
+              message: message,
+              timestamp: new Date(),
+              type: "room",
+              roomId: activeRoom,
+            });
           }
           break;
       }
@@ -603,7 +615,15 @@ function App() {
       // Clear interval
       clearInterval(updateInterval);
     };
-  }, [userToken, username, isUsernameSet, userId, directMessageRecipient]); // Only re-run if these values change
+  }, [
+    userToken,
+    username,
+    isUsernameSet,
+    userId,
+    directMessageRecipient,
+    addMessage,
+    setUnreadMessages,
+  ]); // Added addMessage to dependencies
 
   // Auto-scroll when messages change
   useEffect(() => {
@@ -681,33 +701,25 @@ function App() {
                 <p className="text-gray-400 text-center">No active rooms</p>
               ) : (
                 <ul className="space-y-1">
-                  {/* Debug logging */}
-                  {(() => {
-                    console.log("Rendering rooms:", availableRooms);
-                    return null;
-                  })()}
-                  {availableRooms.map((room) => {
-                    console.log("Rendering room:", room);
-                    return (
-                      <li
-                        key={room.id}
-                        className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
-                          room.id === activeRoom ? "bg-gray-700" : ""
-                        }`}
-                        onClick={() => joinRoomFromSidebar(room.id)}
-                      >
-                        <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-                        <span className="text-sm truncate">
-                          {room.name || room.id}
+                  {availableRooms.map((room) => (
+                    <li
+                      key={room.id}
+                      className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
+                        room.id === activeRoom ? "bg-gray-700" : ""
+                      }`}
+                      onClick={() => joinRoomFromSidebar(room.id)}
+                    >
+                      <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
+                      <span className="text-sm truncate">
+                        {room.name || room.id}
+                      </span>
+                      {room.userCount && (
+                        <span className="bg-gray-600 px-2 py-0.5 rounded-full text-xs">
+                          {room.userCount}
                         </span>
-                        {room.userCount && (
-                          <span className="bg-gray-600 px-2 py-0.5 rounded-full text-xs">
-                            {room.userCount}
-                          </span>
-                        )}
-                      </li>
-                    );
-                  })}
+                      )}
+                    </li>
+                  ))}
                 </ul>
               )}
             </div>
