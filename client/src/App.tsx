@@ -114,6 +114,21 @@ const MessageGroup = React.memo(
         </div>
       </div>
     );
+  },
+  // Custom comparison function to ensure component updates when needed
+  (prevProps, nextProps) => {
+    // Re-render if there are new messages in the group
+    if (prevProps.group.messages.length !== nextProps.group.messages.length) {
+      return false;
+    }
+    // Re-render if the last message ID is different
+    if (
+      prevProps.group.messages[prevProps.group.messages.length - 1]?.id !==
+      nextProps.group.messages[nextProps.group.messages.length - 1]?.id
+    ) {
+      return false;
+    }
+    return true;
   }
 );
 
@@ -184,13 +199,94 @@ function App() {
 
   // Auto-scroll to bottom of messages
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  // Reference for top of messages (for global chat)
-  const messagesTopRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Add a message to the state - IMPORTANT: All hooks must be called before any conditionals
-  const addMessage = useCallback((message: Message) => {
-    setMessages((prev) => [...prev, message]);
+  // Scroll helper function for consistency
+  const scrollToBottom = useCallback(() => {
+    console.log("Scrolling to bottom");
+
+    // First attempt at immediate scroll
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop =
+        chatContainerRef.current.scrollHeight;
+    }
+
+    // Secondary attempt with a short delay
+    setTimeout(() => {
+      // Method 1: Using scrollIntoView with immediate behavior
+      messagesEndRef.current?.scrollIntoView({
+        behavior: "auto",
+        block: "end",
+      });
+
+      // Method 2: Direct container manipulation as backup
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop =
+          chatContainerRef.current.scrollHeight;
+      }
+    }, 10);
+
+    // Final attempt with a longer delay to catch any edge cases
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({
+        behavior: "auto",
+        block: "end",
+      });
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop =
+          chatContainerRef.current.scrollHeight;
+      }
+    }, 300);
   }, []);
+
+  // Auto-scroll when messages change
+  useEffect(() => {
+    console.log("Messages updated, triggering scroll");
+    scrollToBottom();
+  }, [messages, activeTab, scrollToBottom]);
+
+  // Add a message to the state with optimistic update for better UX
+  const addMessage = useCallback(
+    (message: Message) => {
+      console.log("Adding message:", message);
+      // Force a new array reference to ensure React detects the change
+      setMessages((prevMessages) => {
+        console.log("Previous message count:", prevMessages.length);
+
+        // Check for duplicates based on content, sender, type and timestamp proximity
+        const isDuplicate = prevMessages.some(
+          (existing) =>
+            existing.message === message.message &&
+            existing.senderId === message.senderId &&
+            existing.type === message.type &&
+            (message.type === "direct"
+              ? existing.recipientId === message.recipientId
+              : true) &&
+            (message.type === "room"
+              ? existing.roomId === message.roomId
+              : true) &&
+            // Check if timestamps are within 2 seconds of each other
+            Math.abs(
+              new Date(existing.timestamp).getTime() -
+                new Date(message.timestamp).getTime()
+            ) < 2000
+        );
+
+        if (isDuplicate) {
+          console.log("Duplicate message detected, not adding:", message);
+          return prevMessages; // Return unchanged array
+        }
+
+        const newMessages = [...prevMessages, message];
+        console.log("New message count:", newMessages.length);
+        return newMessages;
+      });
+
+      // Force scroll after adding message
+      scrollToBottom();
+    },
+    [scrollToBottom]
+  );
 
   // Filter messages based on active tab
   const filteredMessages = useMemo(() => {
@@ -217,16 +313,10 @@ function App() {
   // Sort messages based on active tab
   const sortedMessages = useMemo(() => {
     return [...filteredMessages].sort((a, b) => {
-      // For global chat, reverse order (newest first)
-      if (activeTab === "global") {
-        return (
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
-      }
-      // For direct messages and rooms, keep chronological order (oldest first)
-      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+      // Sort all messages by timestamp (oldest first) for all chat types
+      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
     });
-  }, [filteredMessages, activeTab]);
+  }, [filteredMessages]);
 
   // Group messages by sender
   const messageGroups = useMemo(() => {
@@ -625,17 +715,6 @@ function App() {
     setUnreadMessages,
   ]); // Added addMessage to dependencies
 
-  // Auto-scroll when messages change
-  useEffect(() => {
-    // For global chat, scroll to top (latest messages)
-    if (activeTab === "global") {
-      messagesTopRef.current?.scrollIntoView({ behavior: "smooth" });
-    } else {
-      // For direct messages and rooms, scroll to bottom
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [messages, activeTab]);
-
   // Join a room
   const joinRoom = (e: React.FormEvent) => {
     e.preventDefault();
@@ -788,6 +867,7 @@ function App() {
 
       {/* Main Chat Area */}
       <div className="flex flex-col flex-grow h-full overflow-hidden">
+        {/* Chat Header */}
         <div className="bg-black text-white p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-900">
           <h1 className="text-xl font-bold">
             {activeTab === "global"
@@ -834,30 +914,39 @@ function App() {
 
         {/* Messages display */}
         <div
-          className={`flex-1 overflow-y-auto p-4  ${
-            activeTab === "global" ? "flex flex-col-reverse" : "flex flex-col"
-          } bg-black`}
+          className={`flex-1 overflow-y-auto p-4 flex flex-col bg-black`}
+          ref={chatContainerRef}
         >
-          {activeTab === "global" && <div ref={messagesTopRef} />}
           {filteredMessages.length === 0 ? (
             <p className="text-center text-gray-500">No messages yet</p>
           ) : (
-            <div
-              className={`space-y-6 ${
-                activeTab !== "global" ? "flex flex-col-reverse" : ""
-              }`}
-            >
-              {messageGroups.map((group, groupIndex) => (
-                <MessageGroup
-                  key={`group-${groupIndex}`}
-                  group={group}
-                  userId={userId}
-                  selectRecipient={selectRecipient}
+            <>
+              {/* Spacer to push content to bottom when there are few messages */}
+              <div className="flex-grow" />
+
+              <div className="space-y-6 pb-2">
+                {messageGroups.map((group, groupIndex) => {
+                  // Create a unique key based on the group's first message id and index
+                  const groupKey = `${
+                    group.messages[0]?.id || "empty"
+                  }-${groupIndex}`;
+                  return (
+                    <MessageGroup
+                      key={groupKey}
+                      group={group}
+                      userId={userId}
+                      selectRecipient={selectRecipient}
+                    />
+                  );
+                })}
+                {/* Always keep the scroll anchor at the end of the content */}
+                <div
+                  ref={messagesEndRef}
+                  style={{ height: "20px", clear: "both" }}
                 />
-              ))}
-            </div>
+              </div>
+            </>
           )}
-          {activeTab !== "global" && <div ref={messagesEndRef} />}
         </div>
 
         {/* Message input */}
