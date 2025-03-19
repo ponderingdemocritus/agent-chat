@@ -1,3 +1,6 @@
+/* Font imports */
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&display=swap');
+
 @import "tailwindcss";
 
 @plugin "tailwindcss-animate";
@@ -121,4 +124,34 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+
+
+/* Base font styles */
+body {
+  font-family: 'DM Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Font utility classes */
+.font-mono {
+  font-family: 'DM Mono', monospace;
+}
+
+.font-light {
+  font-weight: 300;
+}
+
+.font-normal {
+  font-weight: 400;
+}
+
+.font-medium {
+  font-weight: 500;
+}
+
+.font-italic {
+  font-style: italic;
 }

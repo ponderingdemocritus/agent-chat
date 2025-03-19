@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import ChatClient from "./chat";
 import "./App.css";
 import { Button } from "./components/ui/button";
+import React from "react";
 
 // Function to generate deterministic userID and token from username
 const generateUserCredentials = (username: string) => {
@@ -52,6 +53,107 @@ interface Room {
   userCount?: number;
 }
 
+// MessageGroup component for better performance
+const MessageGroup = React.memo(
+  ({
+    group,
+    userId,
+    selectRecipient,
+  }: {
+    group: {
+      senderId: string;
+      senderUsername?: string;
+      messages: Message[];
+    };
+    userId: string;
+    selectRecipient: (userId: string) => void;
+  }) => {
+    return (
+      <div className="message-group">
+        {/* Sender info for the group */}
+        <div className="flex items-center">
+          <div
+            className={`h-5 w-5 rounded-full flex items-center justify-center text-sm ${
+              group.senderId === userId ? "bg-indigo-600/30" : "bg-green-700/30"
+            } mr-2`}
+          >
+            {(group.senderUsername || group.senderId).charAt(0).toUpperCase()}
+          </div>
+          <span
+            className={`text-sm ${
+              group.senderId === userId
+                ? "text-gray-300/40"
+                : "text-gray-300/60 hover:text-white hover:underline cursor-pointer"
+            }`}
+            onClick={() =>
+              group.senderId !== userId && selectRecipient(group.senderId)
+            }
+          >
+            {group.senderId === userId
+              ? "You"
+              : group.senderUsername || group.senderId}
+          </span>
+          <span className="text-xs text-gray-500 ml-2 align-bottom">
+            {new Date(group.messages[0].timestamp).toLocaleTimeString()}
+          </span>
+        </div>
+
+        {/* Messages from this sender */}
+        <div className="pl-4 space-y-1">
+          {group.messages.map((msg) => (
+            <div key={msg.id} className="flex flex-col">
+              <div
+                className={`rounded-lg px-3 inline-block ${
+                  msg.senderId === userId ? " text-white" : " text-gray-200"
+                }`}
+              >
+                {msg.message}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+);
+
+// MessageInput component to prevent re-renders of the entire app when typing
+const MessageInput = React.memo(
+  ({ onSendMessage }: { onSendMessage: (message: string) => void }) => {
+    const [message, setMessage] = useState("");
+
+    const handleSubmit = (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!message.trim()) return;
+      onSendMessage(message);
+      setMessage("");
+    };
+
+    return (
+      <form
+        onSubmit={handleSubmit}
+        className="p-3 border-t border-gray-900 flex-shrink-0 bg-black"
+      >
+        <div className="flex space-x-2">
+          <input
+            type="text"
+            placeholder="Type a message..."
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            className="flex-1 p-2 border rounded bg-black border-gray-900 text-white"
+          />
+          <button
+            type="submit"
+            className="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+          >
+            Send
+          </button>
+        </div>
+      </form>
+    );
+  }
+);
+
 function App() {
   // User state
   const [userId, setUserId] = useState<string>(initialUserId);
@@ -62,7 +164,6 @@ function App() {
   // Chat state
   const [chatClient, setChatClient] = useState<ChatClient | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState("");
   const [activeTab, setActiveTab] = useState<"global" | "direct" | "room">(
     "global"
   );
@@ -86,6 +187,176 @@ function App() {
   // Reference for top of messages (for global chat)
   const messagesTopRef = useRef<HTMLDivElement>(null);
 
+  // Add a message to the state - IMPORTANT: All hooks must be called before any conditionals
+  const addMessage = useCallback((message: Message) => {
+    setMessages((prev) => [...prev, message]);
+  }, []);
+
+  // Filter messages based on active tab
+  const filteredMessages = useMemo(() => {
+    return messages.filter((msg) => {
+      if (activeTab === "global") return msg.type === "global";
+      if (activeTab === "direct") {
+        // Only show direct messages that involve the current user and the selected recipient
+        const isRelevantMessage =
+          msg.type === "direct" &&
+          ((msg.senderId === userId &&
+            msg.recipientId === directMessageRecipient) ||
+            (msg.senderId === directMessageRecipient &&
+              (msg.recipientId === userId || msg.recipientId === undefined)));
+
+        // Debug logging
+        console.log(
+          `Filtering DM: ${msg.senderId} -> ${msg.recipientId}, relevant: ${isRelevantMessage}`
+        );
+        console.log(
+          `Current user: ${userId}, Selected recipient: ${directMessageRecipient}`
+        );
+
+        return isRelevantMessage;
+      }
+      if (activeTab === "room")
+        return msg.type === "room" && msg.roomId === activeRoom;
+      return false;
+    });
+  }, [messages, activeTab, userId, directMessageRecipient, activeRoom]);
+
+  // Sort messages based on active tab
+  const sortedMessages = useMemo(() => {
+    return [...filteredMessages].sort((a, b) => {
+      // For global chat, reverse order (newest first)
+      if (activeTab === "global") {
+        return (
+          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+      }
+      // For direct messages and rooms, keep chronological order (oldest first)
+      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    });
+  }, [filteredMessages, activeTab]);
+
+  // Group messages by sender
+  const messageGroups = useMemo(() => {
+    return sortedMessages.reduce(
+      (
+        groups: Array<{
+          senderId: string;
+          senderUsername?: string;
+          messages: Message[];
+        }>,
+        msg
+      ) => {
+        // Get the last group or create a new one if none exists
+        const lastGroup = groups.length > 0 ? groups[groups.length - 1] : null;
+
+        // Check if this is a new sender or if there's a significant time gap (5+ minutes)
+        const timeDiff = lastGroup
+          ? Math.abs(
+              new Date(msg.timestamp).getTime() -
+                new Date(
+                  lastGroup.messages[lastGroup.messages.length - 1].timestamp
+                ).getTime()
+            )
+          : Infinity;
+        const isNewTimeGroup = timeDiff > 5 * 60 * 1000; // 5 minutes
+
+        // Always create a new group for short messages like "hey"
+        const isShortMessage = msg.message.trim().split(/\s+/).length <= 1;
+
+        // If this is a new sender, time gap, or short message, create a new group
+        if (
+          !lastGroup ||
+          lastGroup.senderId !== msg.senderId ||
+          isNewTimeGroup ||
+          isShortMessage
+        ) {
+          groups.push({
+            senderId: msg.senderId,
+            senderUsername: msg.senderUsername,
+            messages: [msg],
+          });
+        } else {
+          // Add to existing group if same sender and within time window
+          lastGroup.messages.push(msg);
+        }
+
+        return groups;
+      },
+      []
+    );
+  }, [sortedMessages]);
+
+  // Set direct message recipient from online users list
+  const selectRecipient = useCallback(
+    (userId: string) => {
+      console.log(`Selecting recipient: ${userId}`);
+      setDirectMessageRecipient(userId);
+      setActiveTab("direct");
+      setShowOnlineUsers(false);
+
+      // Clear unread messages for this user
+      setUnreadMessages((prev) => ({
+        ...prev,
+        [userId]: 0,
+      }));
+
+      // Request message history with this user
+      if (chatClient) {
+        console.log(`Requesting direct message history with ${userId}`);
+        chatClient.getDirectMessageHistory(userId);
+      }
+    },
+    [
+      chatClient,
+      setDirectMessageRecipient,
+      setActiveTab,
+      setShowOnlineUsers,
+      setUnreadMessages,
+    ]
+  );
+
+  // Send a message based on active tab
+  const handleSendMessage = useCallback(
+    (message: string) => {
+      if (!chatClient) return;
+
+      switch (activeTab) {
+        case "global":
+          chatClient.sendGlobalMessage(message);
+          break;
+        case "direct":
+          if (directMessageRecipient) {
+            chatClient.sendDirectMessage(directMessageRecipient, message);
+            // Add to our local messages for immediate feedback
+            addMessage({
+              id: Date.now().toString(),
+              senderId: userId,
+              senderUsername: username,
+              recipientId: directMessageRecipient,
+              message: message,
+              timestamp: new Date(),
+              type: "direct",
+            });
+          }
+          break;
+        case "room":
+          if (activeRoom) {
+            chatClient.sendRoomMessage(activeRoom, message);
+          }
+          break;
+      }
+    },
+    [
+      activeTab,
+      chatClient,
+      directMessageRecipient,
+      activeRoom,
+      userId,
+      username,
+      addMessage,
+    ]
+  );
+
   // Handle username submission
   const handleUsernameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +376,7 @@ function App() {
   useEffect(() => {
     if (!isUsernameSet) return;
 
+    console.log("Initializing chat client");
     const client = new ChatClient(userToken, username);
     setChatClient(client);
 
@@ -191,26 +463,17 @@ function App() {
 
     // Handle available rooms updates
     const handleAvailableRooms = (rooms: Room[]) => {
-      console.log("Received available rooms:", JSON.stringify(rooms));
-      console.log(
-        "Room IDs:",
-        rooms.map((room) => room.id)
-      );
-      console.log(
-        "Current state of availableRooms:",
-        JSON.stringify(availableRooms)
-      );
-      console.log(
-        "Room IDs in current state:",
-        availableRooms.map((room) => room.id)
-      );
       setAvailableRooms(rooms);
     };
 
-    // Override the console.log implementations in ChatClient with our UI handlers
+    // Register event handlers
     client.socket.on("directMessage", handleDirectMessage);
     client.socket.on("roomMessage", handleRoomMessage);
     client.socket.on("globalMessage", handleGlobalMessage);
+    client.socket.on("onlineUsers", handleOnlineUsers);
+    client.socket.on("availableRooms", handleAvailableRooms);
+
+    // Register history event handlers
     client.socket.on("globalHistory", (history) => {
       const historyMessages = history.map((msg: any) => ({
         id: Date.now() + Math.random().toString(),
@@ -223,7 +486,6 @@ function App() {
       setMessages((prev) => [...prev, ...historyMessages]);
     });
 
-    // Add handler for direct message history
     client.socket.on(
       "directMessageHistory",
       ({ otherUserId, messages: historyMessages }) => {
@@ -255,8 +517,6 @@ function App() {
             };
           });
 
-          console.log("Formatted messages:", formattedMessages);
-
           // Replace existing direct messages with these users
           setMessages((prev) => {
             // Filter out existing direct messages between these users
@@ -287,13 +547,6 @@ function App() {
       }
     );
 
-    // Handle online users updates
-    client.socket.on("onlineUsers", handleOnlineUsers);
-
-    // Handle available rooms updates
-    client.socket.on("availableRooms", handleAvailableRooms);
-
-    // Add handler for room history
     client.socket.on("roomHistory", ({ roomId, messages: historyMessages }) => {
       console.log(`Received room history for ${roomId}:`, historyMessages);
 
@@ -308,8 +561,6 @@ function App() {
           roomId: msg.room_id,
         }));
 
-        console.log("Formatted room messages:", formattedMessages);
-
         // Replace existing room messages
         setMessages((prev) => {
           // Filter out existing messages for this room
@@ -323,13 +574,13 @@ function App() {
       }
     });
 
-    // Manually request online users and available rooms
+    // Request initial data
     client.getOnlineUsers();
     client.getRooms();
 
     // Set up an interval to periodically request online users and rooms
     const updateInterval = setInterval(() => {
-      if (client) {
+      if (client.socket.connected) {
         client.getOnlineUsers();
         client.getRooms();
       }
@@ -346,10 +597,13 @@ function App() {
       client.socket.off("onlineUsers", handleOnlineUsers);
       client.socket.off("availableRooms", handleAvailableRooms);
 
+      // Disconnect socket to prevent memory leaks
+      client.socket.disconnect();
+
       // Clear interval
       clearInterval(updateInterval);
     };
-  }, [userToken, username, isUsernameSet]);
+  }, [userToken, username, isUsernameSet, userId, directMessageRecipient]); // Only re-run if these values change
 
   // Auto-scroll when messages change
   useEffect(() => {
@@ -361,45 +615,6 @@ function App() {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, activeTab]);
-
-  // Add a message to the state
-  const addMessage = (message: Message) => {
-    setMessages((prev) => [...prev, message]);
-  };
-
-  // Send a message based on active tab
-  const sendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !chatClient) return;
-
-    switch (activeTab) {
-      case "global":
-        chatClient.sendGlobalMessage(newMessage);
-        break;
-      case "direct":
-        if (directMessageRecipient) {
-          chatClient.sendDirectMessage(directMessageRecipient, newMessage);
-          // Add to our local messages for immediate feedback
-          addMessage({
-            id: Date.now().toString(),
-            senderId: userId,
-            senderUsername: username,
-            recipientId: directMessageRecipient,
-            message: newMessage,
-            timestamp: new Date(),
-            type: "direct",
-          });
-        }
-        break;
-      case "room":
-        if (activeRoom) {
-          chatClient.sendRoomMessage(activeRoom, newMessage);
-        }
-        break;
-    }
-
-    setNewMessage("");
-  };
 
   // Join a room
   const joinRoom = (e: React.FormEvent) => {
@@ -428,26 +643,6 @@ function App() {
     chatClient.getRoomHistory(roomId);
   };
 
-  // Set direct message recipient from online users list
-  const selectRecipient = (userId: string) => {
-    console.log(`Selecting recipient: ${userId}`);
-    setDirectMessageRecipient(userId);
-    setActiveTab("direct");
-    setShowOnlineUsers(false);
-
-    // Clear unread messages for this user
-    setUnreadMessages((prev) => ({
-      ...prev,
-      [userId]: 0,
-    }));
-
-    // Request message history with this user
-    if (chatClient) {
-      console.log(`Requesting direct message history with ${userId}`);
-      chatClient.getDirectMessageHistory(userId);
-    }
-  };
-
   // If username is not set, show username form
   if (!isUsernameSet) {
     return (
@@ -472,43 +667,6 @@ function App() {
       </div>
     );
   }
-
-  // Filter messages based on active tab
-  const filteredMessages = messages.filter((msg) => {
-    if (activeTab === "global") return msg.type === "global";
-    if (activeTab === "direct") {
-      // Only show direct messages that involve the current user and the selected recipient
-      const isRelevantMessage =
-        msg.type === "direct" &&
-        ((msg.senderId === userId &&
-          msg.recipientId === directMessageRecipient) ||
-          (msg.senderId === directMessageRecipient &&
-            (msg.recipientId === userId || msg.recipientId === undefined)));
-
-      // Debug logging
-      console.log(
-        `Filtering DM: ${msg.senderId} -> ${msg.recipientId}, relevant: ${isRelevantMessage}`
-      );
-      console.log(
-        `Current user: ${userId}, Selected recipient: ${directMessageRecipient}`
-      );
-
-      return isRelevantMessage;
-    }
-    if (activeTab === "room")
-      return msg.type === "room" && msg.roomId === activeRoom;
-    return false;
-  });
-
-  // Sort messages based on active tab
-  const sortedMessages = [...filteredMessages].sort((a, b) => {
-    // For global chat, reverse order (newest first)
-    if (activeTab === "global") {
-      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
-    }
-    // For direct messages and rooms, keep chronological order (oldest first)
-    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
-  });
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-200">
@@ -677,129 +835,21 @@ function App() {
                 activeTab !== "global" ? "flex flex-col-reverse" : ""
               }`}
             >
-              {sortedMessages
-                .reduce(
-                  (
-                    groups: Array<{
-                      senderId: string;
-                      senderUsername?: string;
-                      messages: Message[];
-                    }>,
-                    msg
-                  ) => {
-                    // Get the last group or create a new one if none exists
-                    const lastGroup =
-                      groups.length > 0 ? groups[groups.length - 1] : null;
-
-                    // Check if this is a new sender or if there's a significant time gap (5+ minutes)
-                    const timeDiff = lastGroup
-                      ? Math.abs(
-                          new Date(msg.timestamp).getTime() -
-                            new Date(
-                              lastGroup.messages[
-                                lastGroup.messages.length - 1
-                              ].timestamp
-                            ).getTime()
-                        )
-                      : Infinity;
-                    const isNewTimeGroup = timeDiff > 5 * 60 * 1000; // 5 minutes
-
-                    // Always create a new group for short messages like "hey"
-                    const isShortMessage =
-                      msg.message.trim().split(/\s+/).length <= 1;
-
-                    // If this is a new sender, time gap, or short message, create a new group
-                    if (
-                      !lastGroup ||
-                      lastGroup.senderId !== msg.senderId ||
-                      isNewTimeGroup ||
-                      isShortMessage
-                    ) {
-                      groups.push({
-                        senderId: msg.senderId,
-                        senderUsername: msg.senderUsername,
-                        messages: [msg],
-                      });
-                    } else {
-                      // Add to existing group if same sender and within time window
-                      lastGroup.messages.push(msg);
-                    }
-
-                    return groups;
-                  },
-                  []
-                )
-                .map((group, groupIndex) => (
-                  <div key={`group-${groupIndex}`} className="message-group">
-                    {/* Sender info for the group */}
-                    <div className="flex items-center mb-2">
-                      <div
-                        className={`h-8 w-8 rounded-full flex items-center justify-center ${
-                          group.senderId === userId
-                            ? "bg-indigo-600/30"
-                            : "bg-green-700/30"
-                        } mr-2`}
-                      >
-                        {(group.senderUsername || group.senderId)
-                          .charAt(0)
-                          .toUpperCase()}
-                      </div>
-                      <span className=" text-gray-300/40 text-sm">
-                        {group.senderId === userId
-                          ? "You"
-                          : group.senderUsername || group.senderId}
-                      </span>
-                      <span className="text-xs text-gray-500 ml-2 align-bottom">
-                        {new Date(
-                          group.messages[0].timestamp
-                        ).toLocaleTimeString()}
-                      </span>
-                    </div>
-
-                    {/* Messages from this sender */}
-                    <div className="pl-8 space-y-1">
-                      {group.messages.map((msg, _msgIndex) => (
-                        <div key={msg.id} className="flex flex-col">
-                          <div
-                            className={`rounded-lg  px-3 inline-block ${
-                              msg.senderId === userId
-                                ? " text-white"
-                                : " text-gray-200"
-                            }`}
-                          >
-                            {msg.message}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+              {messageGroups.map((group, groupIndex) => (
+                <MessageGroup
+                  key={`group-${groupIndex}`}
+                  group={group}
+                  userId={userId}
+                  selectRecipient={selectRecipient}
+                />
+              ))}
             </div>
           )}
           {activeTab !== "global" && <div ref={messagesEndRef} />}
         </div>
 
         {/* Message input */}
-        <form
-          onSubmit={sendMessage}
-          className="p-3 border-t border-gray-900 flex-shrink-0 bg-black"
-        >
-          <div className="flex space-x-2">
-            <input
-              type="text"
-              placeholder="Type a message..."
-              value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
-              className="flex-1 p-2 border rounded bg-black border-gray-900 text-white"
-            />
-            <button
-              type="submit"
-              className="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-            >
-              Send
-            </button>
-          </div>
-        </form>
+        <MessageInput onSendMessage={handleSendMessage} />
       </div>
     </div>
   );

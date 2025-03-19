@@ -1,4 +1,3 @@
-// src/server.ts
 import express from "express";
 import { createServer } from "http";
 import { Server, Socket } from "socket.io";
@@ -11,26 +10,16 @@ dotenv.config();
 // Create Express app
 const app = express();
 
-// User and socket tracking
-interface UserSocket {
-  userId: string;
-  socket: Socket;
-}
-
-// In-memory socket mappings (these still need to be in-memory)
+// In-memory socket mappings
 const userSockets = new Map<string, Socket>(); // userId -> socket
 const socketUsers = new Map<string, string>(); // socketId -> userId
 
-// Mock functions for authentication
-// In a real app, these would connect to your actual auth system
+// Authentication helpers
 function isValidToken(token: string): boolean {
-  console.log(`Validating token: ${token}`);
-  // Mock implementation - replace with actual JWT verification
   return Boolean(token && token.length > 10);
 }
 
 function extractUserId(token: string): string {
-  // Mock implementation - replace with actual JWT decoding
   return token.split("-")[0];
 }
 
@@ -41,11 +30,11 @@ function findSocketByUserId(userId: string): Socket | undefined {
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // Allow connections from any origin
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true,
   },
-}); // Allow connections from Docker containers
+});
 
 // Authentication middleware
 io.use((socket, next) => {
@@ -55,7 +44,7 @@ io.use((socket, next) => {
   if (isValidToken(token)) {
     const userId = extractUserId(token);
     socket.data.userId = userId;
-    socket.data.username = username || userId; // Use username if provided, otherwise use userId
+    socket.data.username = username || userId;
     next();
   } else {
     next(new Error("Authentication error"));
@@ -73,21 +62,17 @@ io.on("connection", async (socket) => {
   userSockets.set(userId, socket);
   socketUsers.set(socket.id, userId);
 
-  // Update user status in database with username
+  // Update user status and broadcast online users
   await chatService.upsertUser(userId, true, username);
-
-  // Get online users from database and broadcast
   const onlineUsers = await chatService.getOnlineUsers();
   io.emit("onlineUsers", onlineUsers);
 
-  // Join global chat automatically
+  // Join global chat and send history
   socket.join("global");
-
-  // Get global chat history from database
   const globalHistory = await chatService.getGlobalChatHistory();
   socket.emit("globalHistory", globalHistory);
 
-  // Debug event to check message counts
+  // Debug event handler
   socket.on("debug", async (data) => {
     try {
       console.log("Debug request received:", data);
@@ -106,8 +91,6 @@ io.on("connection", async (socket) => {
           count: messages.length,
           messages,
         });
-
-        // Also log the SQL query parameters for debugging
         console.log(
           `Debug direct messages between ${userId} and ${data.otherUserId}`
         );
@@ -119,7 +102,7 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Handle direct messages
+  // Direct message handler
   socket.on("directMessage", async ({ recipientId, message }) => {
     const senderId = socket.data.userId;
     const senderUsername = socket.data.username;
@@ -166,7 +149,7 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Handle direct message history request
+  // Direct message history handler
   socket.on("getDirectMessageHistory", async ({ otherUserId }) => {
     console.log(
       `User ${userId} requested direct message history with ${otherUserId}`
@@ -177,11 +160,9 @@ io.on("connection", async (socket) => {
         userId,
         otherUserId
       );
-
       console.log(
         `Found ${history.length} messages between ${userId} and ${otherUserId}`
       );
-
       socket.emit("directMessageHistory", { otherUserId, messages: history });
     } catch (error) {
       console.error("Error getting direct message history:", error);
@@ -189,7 +170,7 @@ io.on("connection", async (socket) => {
     }
   });
 
-  // Handle room operations
+  // Room operations handlers
   socket.on("joinRoom", ({ roomId }) => {
     socket.join(roomId);
     socket.emit("roomJoined", { roomId });
@@ -200,9 +181,7 @@ io.on("connection", async (socket) => {
     const senderId = socket.data.userId;
     const senderUsername = socket.data.username;
 
-    // Save room message to database
     await chatService.saveRoomMessage(senderId, roomId, message);
-
     console.log(
       `Room message ${message} sent to room ${roomId} by ${senderId} (${senderUsername})`
     );
@@ -226,12 +205,11 @@ io.on("connection", async (socket) => {
     io.to(roomId).emit("userLeft", { userId: socket.data.userId, roomId });
   });
 
-  // Handle global chat
+  // Global chat handler
   socket.on("globalMessage", async ({ message }) => {
     const senderId = socket.data.userId;
     const senderUsername = socket.data.username;
 
-    // Save global message to database
     await chatService.saveGlobalMessage(senderId, message);
 
     const messageData = {
@@ -244,24 +222,22 @@ io.on("connection", async (socket) => {
     io.to("global").emit("globalMessage", messageData);
   });
 
-  // Handle request for online users
+  // Online users request handler
   socket.on("getOnlineUsers", async () => {
     console.log(`User ${userId} requested online users list`);
     const onlineUsers = await chatService.getOnlineUsers();
     socket.emit("onlineUsers", onlineUsers);
   });
 
-  // Handle request for available rooms
+  // Available rooms request handler
   socket.on("getRooms", async () => {
     console.log(`User ${userId} requested available rooms list`);
-    // Get rooms from database
     const availableRooms = await chatService.getAvailableRooms();
-
     console.log(`Available rooms: ${JSON.stringify(availableRooms)}`);
     socket.emit("availableRooms", availableRooms);
   });
 
-  // Handle disconnection
+  // Disconnection handler
   socket.on("disconnect", async () => {
     const userId = socketUsers.get(socket.id);
     console.log(`User disconnected: ${socket.id} (User ID: ${userId})`);
@@ -270,10 +246,8 @@ io.on("connection", async (socket) => {
       userSockets.delete(userId);
       socketUsers.delete(socket.id);
 
-      // Update user status in database
       await chatService.setUserOffline(userId);
 
-      // Get updated online users and broadcast
       const onlineUsers = await chatService.getOnlineUsers();
       io.emit("userOffline", { userId });
       io.emit(
