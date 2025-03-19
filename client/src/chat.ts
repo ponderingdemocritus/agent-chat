@@ -4,22 +4,52 @@ class ChatClient {
   socket: Socket; // Changed to public for direct access from App component
 
   constructor(token: string, username?: string) {
+    // Configure socket.io with better reconnection settings
     this.socket = io(import.meta.env.VITE_PUBLIC_CHAT_URL, {
       auth: {
         token,
         username,
       },
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+      // Don't automatically connect until the client is ready to handle events
+      autoConnect: false,
     });
+
+    // Set up all listeners first
     this.setupListeners();
 
-    // Request online users list when connected
-    this.socket.on("connect", () => {
-      console.log("Connected to server, requesting online users");
-      this.getOnlineUsers();
-    });
+    // Then connect to server
+    this.socket.connect();
+
+    console.log("ChatClient initialized, connecting to server...");
   }
 
   private setupListeners() {
+    // Connection events
+    this.socket.on("connect", () => {
+      console.log("Socket.io connected successfully with ID:", this.socket.id);
+    });
+
+    this.socket.on("disconnect", (reason) => {
+      console.log("Socket.io disconnected:", reason);
+    });
+
+    this.socket.on("connect_error", (error) => {
+      console.error("Socket.io connection error:", error);
+    });
+
+    this.socket.on("reconnect", (attemptNumber) => {
+      console.log(`Socket.io reconnected after ${attemptNumber} attempts`);
+      // Request updated data after reconnection
+      this.getAllUsers();
+      this.getRooms();
+    });
+
+    // Message events
     this.socket.on("directMessage", ({ senderId, recipientId, message }) => {
       console.log(`DM from ${senderId} to ${recipientId || "me"}: ${message}`);
       // Update UI

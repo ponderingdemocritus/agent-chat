@@ -486,7 +486,7 @@ function App() {
     if (!isUsernameSet) return;
 
     console.log("Initializing chat client");
-    const client = new ChatClient(userToken, username);
+    let client: ChatClient | null = new ChatClient(userToken, username);
     setChatClient(client);
 
     // Custom event listeners for our UI
@@ -589,6 +589,19 @@ function App() {
     const handleAvailableRooms = (rooms: Room[]) => {
       setAvailableRooms(rooms);
     };
+
+    // Monitor connection status
+    client.socket.on("connect", () => {
+      console.log("Socket connected with ID:", client?.socket.id);
+    });
+
+    client.socket.on("disconnect", (reason) => {
+      console.log("Socket disconnected:", reason);
+    });
+
+    client.socket.on("connect_error", (error) => {
+      console.error("Connection error:", error);
+    });
 
     // Register event handlers
     client.socket.on("directMessage", handleDirectMessage);
@@ -699,35 +712,49 @@ function App() {
       }
     });
 
-    // Request initial data
-    client.getAllUsers(); // Request both online and offline users
-    client.getRooms();
+    // Request initial data once (after a short delay to ensure connection is ready)
+    const initTimer = setTimeout(() => {
+      if (client?.socket.connected) {
+        console.log("Requesting initial data");
+        client.getAllUsers();
+        client.getRooms();
+      }
+    }, 500);
 
     // Set up an interval to periodically request online users and rooms
     const updateInterval = setInterval(() => {
-      if (client.socket.connected) {
-        client.getAllUsers(); // Update both online and offline users
+      if (client?.socket.connected) {
+        console.log("Refreshing user and room data");
+        client.getAllUsers();
         client.getRooms();
       }
-    }, 10000); // Request every 10 seconds
+    }, 30000); // Request every 30 seconds (increased from 10 seconds)
 
     return () => {
-      // Clean up event listeners
-      client.socket.off("directMessage", handleDirectMessage);
-      client.socket.off("roomMessage", handleRoomMessage);
-      client.socket.off("globalMessage", handleGlobalMessage);
-      client.socket.off("globalHistory");
-      client.socket.off("directMessageHistory");
-      client.socket.off("roomHistory");
-      client.socket.off("onlineUsers", handleOnlineUsers);
-      client.socket.off("userLists", handleUserLists);
-      client.socket.off("availableRooms", handleAvailableRooms);
-
-      // Disconnect socket to prevent memory leaks
-      client.socket.disconnect();
-
-      // Clear interval
+      console.log("Cleaning up chat client");
+      // Clear timers first
+      clearTimeout(initTimer);
       clearInterval(updateInterval);
+
+      // Clean up event listeners
+      if (client) {
+        client.socket.off("directMessage", handleDirectMessage);
+        client.socket.off("roomMessage", handleRoomMessage);
+        client.socket.off("globalMessage", handleGlobalMessage);
+        client.socket.off("globalHistory");
+        client.socket.off("directMessageHistory");
+        client.socket.off("roomHistory");
+        client.socket.off("onlineUsers", handleOnlineUsers);
+        client.socket.off("userLists", handleUserLists);
+        client.socket.off("availableRooms", handleAvailableRooms);
+        client.socket.off("connect");
+        client.socket.off("disconnect");
+        client.socket.off("connect_error");
+
+        // Disconnect socket to prevent memory leaks
+        client.socket.disconnect();
+        client = null;
+      }
     };
   }, [
     userToken,
@@ -737,8 +764,7 @@ function App() {
     directMessageRecipient,
     addMessage,
     setUnreadMessages,
-    offlineUsers.length,
-  ]); // Added offlineUsers.length to dependencies
+  ]); // Removed offlineUsers.length from dependencies
 
   // Join a room
   const joinRoom = (e: React.FormEvent) => {
