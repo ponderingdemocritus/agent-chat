@@ -73,17 +73,17 @@ const MessageGroup = React.memo(
         {/* Sender info for the group */}
         <div className="flex items-center">
           <div
-            className={`h-5 w-5 rounded-full flex items-center justify-center text-sm ${
-              group.senderId === userId ? "bg-indigo-600/30" : "bg-green-700/30"
+            className={`h-6 w-6 flex items-center justify-center text-sm ${
+              group.senderId === userId ? "bg-orange-600/40" : "bg-green-600/40"
             } mr-2`}
           >
             {(group.senderUsername || group.senderId).charAt(0).toUpperCase()}
           </div>
           <span
-            className={`text-sm ${
+            className={`text-sm font-medium ${
               group.senderId === userId
-                ? "text-gray-300/40"
-                : "text-gray-300/60 hover:text-white hover:underline cursor-pointer"
+                ? "text-gray-300/70"
+                : "text-gray-200 hover:text-white hover:underline cursor-pointer"
             }`}
             onClick={() =>
               group.senderId !== userId && selectRecipient(group.senderId)
@@ -93,18 +93,20 @@ const MessageGroup = React.memo(
               ? "You"
               : group.senderUsername || group.senderId}
           </span>
-          <span className="text-xs text-gray-500 ml-2 align-bottom">
+          <span className="text-xs text-gray-400 ml-2 align-bottom">
             {new Date(group.messages[0].timestamp).toLocaleTimeString()}
           </span>
         </div>
 
         {/* Messages from this sender */}
-        <div className="pl-4 space-y-1">
+        <div className="pl-7 space-y-1.5 mt-1">
           {group.messages.map((msg) => (
             <div key={msg.id} className="flex flex-col">
               <div
-                className={`rounded-lg px-3 inline-block ${
-                  msg.senderId === userId ? " text-white" : " text-gray-200"
+                className={`px-3 py-2 inline-block max-w-[85%] ${
+                  msg.senderId === userId
+                    ? "bg-orange-600/30 text-white"
+                    : "bg-gray-700/50 text-gray-100"
                 }`}
               >
                 {msg.message}
@@ -147,7 +149,7 @@ const MessageInput = React.memo(
     return (
       <form
         onSubmit={handleSubmit}
-        className="p-3 border-t border-gray-900 flex-shrink-0 bg-black"
+        className="p-3 border-t border-gray-800 flex-shrink-0 bg-gray-900"
       >
         <div className="flex space-x-2">
           <input
@@ -155,11 +157,11 @@ const MessageInput = React.memo(
             placeholder="Type a message..."
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            className="flex-1 p-2 border rounded bg-black border-gray-900 text-white"
+            className="flex-1 p-2 border bg-gray-800 border-gray-700 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
           />
           <button
             type="submit"
-            className="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
+            className="px-6 py-2 bg-orange-600 text-white hover:bg-orange-700 transition-colors"
           >
             Send
           </button>
@@ -188,6 +190,7 @@ function App() {
 
   // Online users state
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
+  const [offlineUsers, setOfflineUsers] = useState<User[]>([]);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [_showOnlineUsers, setShowOnlineUsers] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -200,6 +203,10 @@ function App() {
   // Auto-scroll to bottom of messages
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Add search state variables
+  const [roomSearch, setRoomSearch] = useState<string>("");
+  const [userSearch, setUserSearch] = useState<string>("");
 
   // Scroll helper function for consistency
   const scrollToBottom = useCallback(() => {
@@ -563,6 +570,21 @@ function App() {
       setOnlineUsers(users);
     };
 
+    // Handle user lists (both online and offline)
+    const handleUserLists = ({
+      onlineUsers,
+      offlineUsers,
+    }: {
+      onlineUsers: User[];
+      offlineUsers: User[];
+    }) => {
+      console.log(
+        `Received user lists: ${onlineUsers.length} online, ${offlineUsers.length} offline`
+      );
+      setOnlineUsers(onlineUsers);
+      setOfflineUsers(offlineUsers);
+    };
+
     // Handle available rooms updates
     const handleAvailableRooms = (rooms: Room[]) => {
       setAvailableRooms(rooms);
@@ -573,6 +595,7 @@ function App() {
     client.socket.on("roomMessage", handleRoomMessage);
     client.socket.on("globalMessage", handleGlobalMessage);
     client.socket.on("onlineUsers", handleOnlineUsers);
+    client.socket.on("userLists", handleUserLists);
     client.socket.on("availableRooms", handleAvailableRooms);
 
     // Register history event handlers
@@ -677,13 +700,13 @@ function App() {
     });
 
     // Request initial data
-    client.getOnlineUsers();
+    client.getAllUsers(); // Request both online and offline users
     client.getRooms();
 
     // Set up an interval to periodically request online users and rooms
     const updateInterval = setInterval(() => {
       if (client.socket.connected) {
-        client.getOnlineUsers();
+        client.getAllUsers(); // Update both online and offline users
         client.getRooms();
       }
     }, 10000); // Request every 10 seconds
@@ -697,6 +720,7 @@ function App() {
       client.socket.off("directMessageHistory");
       client.socket.off("roomHistory");
       client.socket.off("onlineUsers", handleOnlineUsers);
+      client.socket.off("userLists", handleUserLists);
       client.socket.off("availableRooms", handleAvailableRooms);
 
       // Disconnect socket to prevent memory leaks
@@ -713,7 +737,8 @@ function App() {
     directMessageRecipient,
     addMessage,
     setUnreadMessages,
-  ]); // Added addMessage to dependencies
+    offlineUsers.length,
+  ]); // Added offlineUsers.length to dependencies
 
   // Join a room
   const joinRoom = (e: React.FormEvent) => {
@@ -742,58 +767,187 @@ function App() {
     chatClient.getRoomHistory(roomId);
   };
 
+  // Filter rooms based on search input
+  const filteredRooms = useMemo(() => {
+    if (!roomSearch.trim()) return availableRooms;
+
+    return availableRooms.filter((room) =>
+      (room.name || room.id).toLowerCase().includes(roomSearch.toLowerCase())
+    );
+  }, [availableRooms, roomSearch]);
+
+  // Filter users based on search input
+  const filteredUsers = useMemo(() => {
+    if (!userSearch.trim()) return onlineUsers;
+
+    return onlineUsers.filter((user) =>
+      (user.username || user.id)
+        .toLowerCase()
+        .includes(userSearch.toLowerCase())
+    );
+  }, [onlineUsers, userSearch]);
+
+  // Filter offline users based on search input
+  const filteredOfflineUsers = useMemo(() => {
+    if (!userSearch.trim()) return offlineUsers;
+
+    return offlineUsers.filter((user) =>
+      (user.username || user.id)
+        .toLowerCase()
+        .includes(userSearch.toLowerCase())
+    );
+  }, [offlineUsers, userSearch]);
+
   // If username is not set, show username form
   if (!isUsernameSet) {
     return (
-      <div className="w-full h-screen flex flex-col items-center justify-center bg-black text-white">
-        <h1 className="text-2xl font-bold mb-4">Welcome to Game Chat</h1>
-        <form
-          onSubmit={handleUsernameSubmit}
-          className="flex flex-col items-center"
-        >
-          <input
-            type="text"
-            placeholder="Enter your username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            className="px-4 py-2 mb-3 border rounded w-64 bg-gray-800 border-gray-900 text-white"
-          />
-          <Button variant={"default"} type="submit">
-            Join Chat
-          </Button>
-        </form>
+      <div className="w-full h-screen flex flex-col items-center justify-center bg-gradient-to-b from-gray-900 to-black text-white">
+        <div className="bg-gray-800/50 p-8 border border-gray-700/50 backdrop-blur-sm">
+          <h1 className="text-3xl font-bold mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-orange-700">
+            Welcome to Game Chat
+          </h1>
+          <form
+            onSubmit={handleUsernameSubmit}
+            className="flex flex-col items-center"
+          >
+            <input
+              type="text"
+              placeholder="Enter your username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              className="px-4 py-3 mb-4 border w-72 bg-gray-700/60 border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+            />
+            <Button
+              variant={"default"}
+              type="submit"
+              className="w-full bg-orange-600 hover:bg-orange-700 text-white font-medium py-2.5 transition-colors"
+            >
+              Join Chat
+            </Button>
+          </form>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-black text-gray-200">
+    <div className="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-100">
       {/* Online Users Sidebar */}
       {sidebarVisible && (
-        <div className="w-64 h-full bg-black text-gray-200 p-4 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-900">
+        <div className="w-72 h-full bg-gray-900 text-gray-200 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-700/50">
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-gray-700/40 bg-gray-900/80">
+            <h1 className="text-xl font-bold text-white flex items-center">
+              <span className="bg-gradient-to-r from-orange-500 to-orange-600 bg-clip-text text-transparent">
+                Game Chat
+              </span>
+              <button
+                className="text-xl ml-auto hover:text-gray-400 transition-colors"
+                onClick={() => setSidebarVisible(false)}
+              >
+                &times;
+              </button>
+            </h1>
+          </div>
+
           {/* Rooms Section */}
-          <div className="mb-6">
-            <h2 className="text-xl font-bold mb-4">Rooms</h2>
-            <div className="overflow-y-auto">
-              {availableRooms.length === 0 ? (
-                <p className="text-gray-400 text-center">No active rooms</p>
+          <div className="px-4 py-3 border-b border-gray-700/40">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-md font-bold text-white">Rooms</h2>
+              <span className="bg-orange-600/60 px-2 py-0.5 text-xs font-medium">
+                {availableRooms.length}
+              </span>
+            </div>
+
+            {/* Room Search */}
+            <div className="relative mb-3">
+              <input
+                type="text"
+                placeholder="Search rooms..."
+                value={roomSearch}
+                onChange={(e) => setRoomSearch(e.target.value)}
+                className="w-full p-2 pl-8 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+              />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4 absolute left-2 top-2.5 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              {roomSearch && (
+                <button
+                  className="absolute right-2 top-2.5 text-gray-400 hover:text-white"
+                  onClick={() => setRoomSearch("")}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-y-auto max-h-40">
+              {filteredRooms.length === 0 ? (
+                roomSearch ? (
+                  <p className="text-gray-400 text-center text-sm py-2">
+                    No rooms match your search
+                  </p>
+                ) : (
+                  <p className="text-gray-400 text-center text-sm py-2">
+                    No active rooms
+                  </p>
+                )
               ) : (
                 <ul className="space-y-1">
-                  {availableRooms.map((room) => (
+                  {filteredRooms.map((room) => (
                     <li
                       key={room.id}
-                      className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
-                        room.id === activeRoom ? "bg-gray-700" : ""
+                      className={`flex items-center px-3 py-2 cursor-pointer transition-colors ${
+                        room.id === activeRoom
+                          ? "bg-orange-600/20 border-l-2 border-orange-500"
+                          : "hover:bg-gray-800/50"
                       }`}
                       onClick={() => joinRoomFromSidebar(room.id)}
                     >
-                      <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
+                      <div className="flex items-center justify-center w-6 h-6 bg-orange-600/20 mr-2">
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-3.5 w-3.5 text-orange-300"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z"
+                          />
+                        </svg>
+                      </div>
                       <span className="text-sm truncate">
                         {room.name || room.id}
                       </span>
                       {room.userCount && (
-                        <span className="bg-gray-600 px-2 py-0.5 rounded-full text-xs">
+                        <span className="ml-auto bg-gray-600/70 px-2 py-0.5 text-xs">
                           {room.userCount}
                         </span>
                       )}
@@ -802,17 +956,17 @@ function App() {
                 </ul>
               )}
             </div>
-            <form onSubmit={joinRoom} className="mt-2 flex space-x-1">
+            <form onSubmit={joinRoom} className="mt-3 flex space-x-1">
               <input
                 type="text"
-                placeholder="Join or Create"
+                placeholder="Join or Create Room"
                 value={newRoomId}
                 onChange={(e) => setNewRoomId(e.target.value)}
-                className="flex-1 p-1 text-sm border rounded bg-gray-800 border-gray-900 text-white"
+                className="flex-1 p-2 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <button
                 type="submit"
-                className="px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm"
+                className="px-3 py-2 bg-orange-600 text-white hover:bg-orange-700 text-sm transition-colors"
               >
                 +
               </button>
@@ -820,47 +974,158 @@ function App() {
           </div>
 
           {/* Users Section */}
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold">Online Users</h2>
-            <span className="bg-green-600 px-3 py-1 rounded-full text-sm">
-              {onlineUsers.length}
-            </span>
-            <button
-              className="text-2xl hover:text-gray-400"
-              onClick={() => setSidebarVisible(false)}
-            >
-              &times;
-            </button>
-          </div>
-          <div className="overflow-y-auto flex-1">
-            {onlineUsers.length === 0 ? (
-              <p className="text-gray-400 text-center">No users online</p>
-            ) : (
-              <ul className="space-y-2">
-                {onlineUsers.map((user) => (
-                  <li
-                    key={user.id}
-                    className={`flex items-center px-2 rounded cursor-pointer hover:bg-gray-700 ${
-                      user.id === userId ? "bg-gray-700" : ""
-                    }`}
-                    onClick={() =>
-                      user.id !== userId && selectRecipient(user.id)
-                    }
+          <div className="px-4 py-3 flex-1 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-md font-bold text-white">Users</h2>
+              <span className="bg-green-600/60 px-2 py-0.5 text-xs font-medium">
+                {onlineUsers.length} online
+              </span>
+            </div>
+
+            {/* User Search */}
+            <div className="relative mb-3">
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                className="w-full p-2 pl-8 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+              />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-4 w-4 absolute left-2 top-2.5 text-gray-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                />
+              </svg>
+              {userSearch && (
+                <button
+                  className="absolute right-2 top-2.5 text-gray-400 hover:text-white"
+                  onClick={() => setUserSearch("")}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="h-4 w-4"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
                   >
-                    <div className="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-                    <span className="text-sm truncate">
-                      {user.username} {user.id === userId && "(You)"}
-                    </span>
-                    {/* Unread message notification badge */}
-                    {user.id !== userId && unreadMessages[user.id] > 0 && (
-                      <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                        {unreadMessages[user.id]}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {filteredUsers.length === 0 &&
+              filteredOfflineUsers.length === 0 ? (
+                userSearch ? (
+                  <p className="text-gray-400 text-center text-sm py-2">
+                    No users match your search
+                  </p>
+                ) : (
+                  <p className="text-gray-400 text-center text-sm py-2">
+                    No users found
+                  </p>
+                )
+              ) : (
+                <div className="space-y-4">
+                  {/* Online Users */}
+                  {filteredUsers.length > 0 && (
+                    <div>
+                      <div className="px-2 py-1 text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">
+                        Online
+                      </div>
+                      <ul className="space-y-2">
+                        {filteredUsers.map((user) => (
+                          <li
+                            key={user.id}
+                            className={`flex items-center px-3 py-2 cursor-pointer transition-colors ${
+                              user.id === userId
+                                ? "bg-orange-600/20 border-l-2 border-orange-500"
+                                : user.id === directMessageRecipient
+                                ? "bg-orange-600/10 border-l-2 border-orange-400"
+                                : "hover:bg-gray-800/50"
+                            }`}
+                            onClick={() =>
+                              user.id !== userId && selectRecipient(user.id)
+                            }
+                          >
+                            <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-orange-500/30 to-orange-600/30 mr-2">
+                              {(
+                                (user.username || user.id || "?").charAt(0) ||
+                                "?"
+                              ).toUpperCase()}
+                            </div>
+                            <span className="text-sm truncate font-medium">
+                              {user.username || user.id}{" "}
+                              {user.id === userId && "(You)"}
+                            </span>
+                            {/* Status indicator */}
+                            <div className="ml-auto w-2 h-2 bg-green-500"></div>
+                            {/* Unread message notification badge */}
+                            {user.id !== userId &&
+                              unreadMessages[user.id] > 0 && (
+                                <span className="ml-1 bg-red-500 text-white text-xs font-bold px-2 py-0.5">
+                                  {unreadMessages[user.id]}
+                                </span>
+                              )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Offline Users */}
+                  {filteredOfflineUsers.length > 0 && (
+                    <div>
+                      <div className="px-2 py-1 text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">
+                        Offline
+                      </div>
+                      <ul className="space-y-2">
+                        {filteredOfflineUsers.map((user) => (
+                          <li
+                            key={user.id}
+                            className={`flex items-center px-3 py-2 cursor-pointer transition-colors opacity-60 ${
+                              user.id === directMessageRecipient
+                                ? "bg-gray-800/30 border-l-2 border-gray-500"
+                                : "hover:bg-gray-800/30"
+                            }`}
+                            onClick={() => selectRecipient(user.id)}
+                          >
+                            <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-gray-500/30 to-gray-600/30 mr-2">
+                              {(
+                                (user.username || user.id || "?").charAt(0) ||
+                                "?"
+                              ).toUpperCase()}
+                            </div>
+                            <span className="text-sm truncate font-medium text-gray-400">
+                              {user.username || user.id}
+                            </span>
+                            {/* Unread message notification badge */}
+                            {unreadMessages[user.id] > 0 && (
+                              <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5">
+                                {unreadMessages[user.id]}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -868,7 +1133,7 @@ function App() {
       {/* Main Chat Area */}
       <div className="flex flex-col flex-grow h-full overflow-hidden">
         {/* Chat Header */}
-        <div className="bg-black text-white p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-900">
+        <div className="bg-gray-900 text-white p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-700/50 shadow-sm">
           <h1 className="text-xl font-bold">
             {activeTab === "global"
               ? "Global Chat"
@@ -885,40 +1150,61 @@ function App() {
               : "Game Chat"}
           </h1>
           <p className="text-gray-400">
-            Logged in as: <span className="text-gray-200">{username}</span>{" "}
+            Logged in as:{" "}
+            <span className="text-orange-300 font-medium">{username}</span>{" "}
           </p>
-          <Button
-            variant={"destructive"}
-            onClick={() => {
-              setIsUsernameSet(false);
-              setUsername("");
-              setUserId(initialUserId);
-              setUserToken(initialToken);
-              setChatClient(null);
-              setMessages([]);
-              setActiveTab("global");
-              setUnreadMessages({});
-            }}
-          >
-            Logout
-          </Button>
-          {!sidebarVisible && (
-            <button
-              className="px-4 py-2 bg-indigo-600 rounded hover:bg-indigo-700"
-              onClick={() => setSidebarVisible(true)}
+          <div className="flex gap-2">
+            {!sidebarVisible && (
+              <Button
+                variant={"outline"}
+                className="px-4 py-2 bg-gray-800 border-gray-600 text-white hover:bg-gray-700 transition-colors"
+                onClick={() => setSidebarVisible(true)}
+              >
+                Show Users
+              </Button>
+            )}
+            <Button
+              variant={"destructive"}
+              className="bg-red-600 hover:bg-red-700 transition-colors"
+              onClick={() => {
+                setIsUsernameSet(false);
+                setUsername("");
+                setUserId(initialUserId);
+                setUserToken(initialToken);
+                setChatClient(null);
+                setMessages([]);
+                setActiveTab("global");
+                setUnreadMessages({});
+              }}
             >
-              Show Users
-            </button>
-          )}
+              Logout
+            </Button>
+          </div>
         </div>
 
         {/* Messages display */}
         <div
-          className={`flex-1 overflow-y-auto p-4 flex flex-col bg-black`}
+          className={`flex-1 overflow-y-auto p-4 flex flex-col bg-gradient-to-b from-gray-950 to-gray-900`}
           ref={chatContainerRef}
         >
           {filteredMessages.length === 0 ? (
-            <p className="text-center text-gray-500">No messages yet</p>
+            <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-12 w-12 mb-2 text-gray-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1}
+                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                />
+              </svg>
+              <p>No messages yet. Start the conversation!</p>
+            </div>
           ) : (
             <>
               {/* Spacer to push content to bottom when there are few messages */}

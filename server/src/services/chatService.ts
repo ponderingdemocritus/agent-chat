@@ -67,6 +67,20 @@ export const chatService = {
     return data || [];
   },
 
+  // New method to get all users (both online and offline)
+  async getAllUsers(): Promise<User[]> {
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, username, is_online, last_seen");
+
+    if (error) {
+      console.error("Error fetching all users:", error);
+      return [];
+    }
+
+    return data || [];
+  },
+
   // Direct message operations
   async saveDirectMessage(
     senderId: string,

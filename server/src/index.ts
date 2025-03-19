@@ -229,6 +229,32 @@ io.on("connection", async (socket) => {
     socket.emit("onlineUsers", onlineUsers);
   });
 
+  // Add new handler for getting all users (both online and offline)
+  socket.on("getAllUsers", async () => {
+    console.log(`User ${userId} requested all users list (online and offline)`);
+    try {
+      // Get all users from the database
+      const allUsers = await chatService.getAllUsers();
+
+      // Split into online and offline users
+      const onlineUsers = allUsers.filter((user) => user.is_online);
+      const offlineUsers = allUsers.filter((user) => !user.is_online);
+
+      console.log(
+        `Found ${onlineUsers.length} online users and ${offlineUsers.length} offline users`
+      );
+
+      // Send both lists to the client
+      socket.emit("userLists", {
+        onlineUsers,
+        offlineUsers,
+      });
+    } catch (error) {
+      console.error("Error fetching all users:", error);
+      socket.emit("error", { message: "Failed to fetch users" });
+    }
+  });
+
   // Available rooms request handler
   socket.on("getRooms", async () => {
     console.log(`User ${userId} requested available rooms list`);

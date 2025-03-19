@@ -67,6 +67,11 @@ class ChatClient {
     this.socket.emit("getOnlineUsers");
   }
 
+  // Add method to request all users (both online and offline)
+  getAllUsers() {
+    this.socket.emit("getAllUsers");
+  }
+
   // Add method to get available rooms
   getRooms() {
     this.socket.emit("getRooms");
