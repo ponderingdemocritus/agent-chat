@@ -17,6 +17,21 @@ export interface User {
   is_online?: boolean;
 }
 
+// Simple logging utility
+const logger = {
+  debug: (context: string, message: string) => {
+    if (process.env.DEBUG === "true") {
+      console.log(`[DEBUG][${context}] ${message}`);
+    }
+  },
+  info: (context: string, message: string) => {
+    console.log(`[INFO][${context}] ${message}`);
+  },
+  error: (context: string, message: string, error?: any) => {
+    console.error(`[ERROR][${context}] ${message}`, error || "");
+  },
+};
+
 // Chat service for database operations
 export const chatService = {
   // User operations
@@ -38,7 +53,11 @@ export const chatService = {
 
     const { error } = await supabase.from("users").upsert(userData);
 
-    if (error) console.error("Error upserting user:", error);
+    if (error) {
+      logger.error("upsertUser", `Failed to upsert user ${userId}`, error);
+    } else {
+      logger.debug("upsertUser", `User ${userId} upserted successfully`);
+    }
   },
 
   async setUserOffline(userId: string): Promise<void> {
@@ -50,7 +69,15 @@ export const chatService = {
       })
       .eq("id", userId);
 
-    if (error) console.error("Error setting user offline:", error);
+    if (error) {
+      logger.error(
+        "setUserOffline",
+        `Failed to set user ${userId} offline`,
+        error
+      );
+    } else {
+      logger.debug("setUserOffline", `User ${userId} set offline`);
+    }
   },
 
   async getOnlineUsers(): Promise<User[]> {
@@ -60,15 +87,18 @@ export const chatService = {
       .eq("is_online", true);
 
     if (error) {
-      console.error("Error fetching online users:", error);
+      logger.error("getOnlineUsers", "Failed to fetch online users", error);
       return [];
     }
 
     // Ensure usernames are set
-    return (data || []).map((user) => ({
+    const users = (data || []).map((user) => ({
       id: user.id,
       username: user.username || user.id,
     }));
+
+    logger.debug("getOnlineUsers", `Found ${users.length} online users`);
+    return users;
   },
 
   // New method to get all users (both online and offline)
@@ -78,10 +108,11 @@ export const chatService = {
       .select("id, username, is_online, last_seen");
 
     if (error) {
-      console.error("Error fetching all users:", error);
+      logger.error("getAllUsers", "Failed to fetch all users", error);
       return [];
     }
 
+    logger.debug("getAllUsers", `Retrieved ${data?.length || 0} users`);
     return data || [];
   },
 
@@ -103,10 +134,15 @@ export const chatService = {
       .single();
 
     if (error) {
-      console.error("Error saving direct message:", error);
+      logger.error(
+        "saveDirectMessage",
+        `Failed to save direct message from ${senderId} to ${recipientId}`,
+        error
+      );
       return null;
     }
 
+    logger.debug("saveDirectMessage", `Message saved with ID: ${data.id}`);
     return data;
   },
 
@@ -115,8 +151,9 @@ export const chatService = {
     userId2: string,
     limit: number = 50
   ): Promise<Message[]> {
-    console.log(
-      `Fetching direct message history between ${userId1} and ${userId2}`
+    logger.debug(
+      "getDirectMessageHistory",
+      `Fetching history between ${userId1} and ${userId2}`
     );
 
     // First approach: Using OR with AND conditions
@@ -130,9 +167,9 @@ export const chatService = {
       .limit(limit);
 
     if (error1) {
-      console.error(
-        "Error fetching direct message history (approach 1):",
-        error1
+      logger.debug(
+        "getDirectMessageHistory",
+        `Primary query failed, trying fallback`
       );
 
       // Try second approach if first fails
@@ -146,8 +183,9 @@ export const chatService = {
         .limit(limit);
 
       if (error2) {
-        console.error(
-          "Error fetching direct message history (approach 2):",
+        logger.error(
+          "getDirectMessageHistory",
+          `Both queries failed for users ${userId1} and ${userId2}`,
           error2
         );
         return [];
@@ -170,7 +208,10 @@ export const chatService = {
         };
       });
 
-      console.log(`Found ${formattedData.length} messages using approach 2`);
+      logger.debug(
+        "getDirectMessageHistory",
+        `Found ${formattedData.length} messages using fallback approach`
+      );
       return formattedData;
     }
 
@@ -184,7 +225,10 @@ export const chatService = {
         };
       }) || [];
 
-    console.log(`Found ${formattedData.length} messages using approach 1`);
+    logger.debug(
+      "getDirectMessageHistory",
+      `Found ${formattedData.length} messages using primary approach`
+    );
     return formattedData;
   },
 
@@ -205,10 +249,18 @@ export const chatService = {
       .single();
 
     if (error) {
-      console.error("Error saving global message:", error);
+      logger.error(
+        "saveGlobalMessage",
+        `Failed to save global message from ${senderId}`,
+        error
+      );
       return null;
     }
 
+    logger.debug(
+      "saveGlobalMessage",
+      `Global message saved with ID: ${data.id}`
+    );
     return data;
   },
 
@@ -221,7 +273,11 @@ export const chatService = {
       .limit(limit);
 
     if (error) {
-      console.error("Error fetching global chat history:", error);
+      logger.error(
+        "getGlobalChatHistory",
+        "Failed to fetch global chat history",
+        error
+      );
       return [];
     }
 
@@ -235,6 +291,10 @@ export const chatService = {
         };
       }) || [];
 
+    logger.debug(
+      "getGlobalChatHistory",
+      `Retrieved ${formattedData.length} global messages`
+    );
     return formattedData;
   },
 
@@ -256,10 +316,18 @@ export const chatService = {
       .single();
 
     if (error) {
-      console.error("Error saving room message:", error);
+      logger.error(
+        "saveRoomMessage",
+        `Failed to save message to room ${roomId}`,
+        error
+      );
       return null;
     }
 
+    logger.debug(
+      "saveRoomMessage",
+      `Message saved to room ${roomId} with ID: ${data.id}`
+    );
     return data;
   },
 
@@ -275,7 +343,11 @@ export const chatService = {
       .limit(limit);
 
     if (error) {
-      console.error("Error fetching room message history:", error);
+      logger.error(
+        "getRoomMessageHistory",
+        `Failed to fetch messages for room ${roomId}`,
+        error
+      );
       return [];
     }
 
@@ -289,12 +361,16 @@ export const chatService = {
         };
       }) || [];
 
+    logger.debug(
+      "getRoomMessageHistory",
+      `Retrieved ${formattedData.length} messages for room ${roomId}`
+    );
     return formattedData;
   },
 
   // Get available rooms
   async getAvailableRooms(): Promise<any[]> {
-    console.log("Fetching available rooms...");
+    logger.debug("getAvailableRooms", "Fetching available rooms");
 
     // First approach: Get all distinct room_ids
     const { data: roomData, error: roomError } = await supabase
@@ -303,18 +379,18 @@ export const chatService = {
       .not("room_id", "is", null);
 
     if (roomError) {
-      console.error("Error fetching available rooms:", roomError);
+      logger.error(
+        "getAvailableRooms",
+        "Failed to fetch available rooms",
+        roomError
+      );
       return [];
     }
-
-    console.log("Raw room data from database:", roomData);
 
     // Extract unique room IDs and ensure they're treated as strings
     const uniqueRoomIds = [
       ...new Set(roomData.map((item) => String(item.room_id))),
     ];
-
-    console.log("Unique room IDs (after string conversion):", uniqueRoomIds);
 
     // For now, we'll return a simple array of room objects
     // In a real app, you would query a rooms table with more details
@@ -323,8 +399,7 @@ export const chatService = {
       name: roomId === "global" ? "Global Chat" : roomId,
     }));
 
-    console.log("Final rooms array:", rooms);
-
+    logger.debug("getAvailableRooms", `Found ${rooms.length} available rooms`);
     return rooms;
   },
 
@@ -337,10 +412,18 @@ export const chatService = {
       .limit(100);
 
     if (error) {
-      console.error("Error fetching all messages:", error);
+      logger.error(
+        "debugGetAllMessages",
+        "Failed to fetch messages for debugging",
+        error
+      );
       return [];
     }
 
+    logger.debug(
+      "debugGetAllMessages",
+      `Retrieved ${data?.length || 0} messages for debugging`
+    );
     return data || [];
   },
 
@@ -359,6 +442,10 @@ export const chatService = {
       (msg) => msg.room_id && msg.room_id !== "global"
     ).length;
 
+    logger.debug(
+      "debugGetMessagesByType",
+      `Message counts - Direct: ${direct}, Global: ${global}, Rooms: ${rooms}`
+    );
     return { direct, global, rooms };
   },
 };
