@@ -369,17 +369,25 @@ function App() {
     e.preventDefault();
     if (!newRoomId.trim() || !chatClient) return;
 
+    console.log(`Joining room from form: ${newRoomId}`);
+
     // Show loading state immediately
     setIsLoadingMessages(true);
 
     // Clear direct message recipient
     setDirectMessageRecipient("");
 
-    chatClient.joinRoom(newRoomId);
+    // First set active room to update UI
     setActiveRoom(newRoomId);
 
-    // Request room history
-    chatClient.getRoomHistory(newRoomId);
+    // Then join the socket.io room
+    chatClient.joinRoom(newRoomId);
+
+    // Request room history after joining
+    setTimeout(() => {
+      console.log(`Requesting room history for ${newRoomId} after join`);
+      chatClient.getRoomHistory(newRoomId);
+    }, 100);
 
     setNewRoomId("");
   };
@@ -388,17 +396,25 @@ function App() {
   const joinRoomFromSidebar = (roomId: string) => {
     if (!chatClient) return;
 
+    console.log(`Joining room from sidebar: ${roomId}`);
+
     // Show loading state immediately
     setIsLoadingMessages(true);
 
     // Clear direct message recipient
     setDirectMessageRecipient("");
 
-    chatClient.joinRoom(roomId);
+    // First set active room to update UI
     setActiveRoom(roomId);
 
-    // Request room history
-    chatClient.getRoomHistory(roomId);
+    // Then join the socket.io room
+    chatClient.joinRoom(roomId);
+
+    // Request room history after joining
+    setTimeout(() => {
+      console.log(`Requesting room history for ${roomId} after join`);
+      chatClient.getRoomHistory(roomId);
+    }, 100);
   };
 
   // Filter rooms based on search input

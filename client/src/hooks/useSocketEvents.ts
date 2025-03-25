@@ -148,6 +148,10 @@ export const useRoomMessageEvents = (
       message,
       timestamp,
     }: any) => {
+      console.log(
+        `Received room message from ${senderId} (${senderUsername}) in room ${roomId}: ${message}`
+      );
+
       addMessage({
         id: Date.now().toString(),
         senderId,

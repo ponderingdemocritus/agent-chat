@@ -67,10 +67,15 @@ class ChatClient {
       console.log(`DM from ${senderId} to ${recipientId || "me"}: ${message}`);
       // Update UI
     });
-    this.socket.on("roomMessage", ({ senderId, message }) => {
-      console.log(`Room message from ${senderId}: ${message}`);
-      // Update UI
-    });
+    this.socket.on(
+      "roomMessage",
+      ({ senderId, senderUsername, roomId, message }) => {
+        console.log(
+          `Room message from ${senderId} (${senderUsername}) in room ${roomId}: ${message}`
+        );
+        // Update UI will be handled by the component
+      }
+    );
     this.socket.on("globalMessage", ({ senderId, message }) => {
       console.log(`Global message from ${senderId}: ${message}`);
       // Update UI
@@ -105,7 +110,13 @@ class ChatClient {
   }
 
   joinRoom(roomId: string) {
+    console.log(`Joining room: ${roomId}`);
     this.socket.emit("joinRoom", { roomId });
+
+    // Listen for confirmation that we've joined the room
+    this.socket.once("roomJoined", (data) => {
+      console.log(`Successfully joined room: ${data.roomId}`);
+    });
   }
 
   sendRoomMessage(roomId: string, message: string) {
@@ -168,7 +179,23 @@ class ChatClient {
   // Add method to get room history
   getRoomHistory(roomId: string) {
     console.log(`Requesting room history for ${roomId}`);
-    this.socket.emit("getRoomHistory", { roomId });
+
+    // Make sure the socket is connected
+    if (!this.socket.connected) {
+      console.warn(
+        "Socket disconnected, reconnecting before requesting room history..."
+      );
+      this.socket.connect();
+
+      // Wait for connection before sending request
+      this.socket.once("connect", () => {
+        console.log("Socket reconnected, sending room history request");
+        this.socket.emit("getRoomHistory", { roomId });
+      });
+    } else {
+      // If already connected, send request immediately
+      this.socket.emit("getRoomHistory", { roomId });
+    }
   }
 
   // Debug method to check message counts and direct messages
