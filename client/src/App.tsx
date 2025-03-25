@@ -3,7 +3,7 @@ import ChatClient from "./chat";
 import "./App.css";
 import { Button } from "./components/ui/button";
 import React from "react";
-import { Message, MessageGroup, User, Room } from "./types";
+import { Message, User, Room } from "./types";
 import {
   generateUserCredentials,
   initialUserId,
