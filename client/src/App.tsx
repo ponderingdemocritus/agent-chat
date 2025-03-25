@@ -3,173 +3,22 @@ import ChatClient from "./chat";
 import "./App.css";
 import { Button } from "./components/ui/button";
 import React from "react";
-
-// Function to generate deterministic userID and token from username
-const generateUserCredentials = (username: string) => {
-  // Simple hash function to convert username to a numeric value
-  const hash = (str: string) => {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32bit integer
-    }
-    return Math.abs(hash).toString();
-  };
-
-  const userId = hash(username);
-  const token = `${userId}-jwt-token-${hash(username + "salt")}`;
-
-  return { userId, token };
-};
-
-// Default values for initial state (will be replaced once username is set)
-const initialUserId = "";
-const initialToken = "";
-
-// Message type definition
-interface Message {
-  id: string;
-  senderId: string;
-  senderUsername?: string;
-  message: string;
-  timestamp: Date;
-  type: "direct" | "room" | "global";
-  roomId?: string;
-  recipientId?: string;
-}
-
-// User type definition
-interface User {
-  id: string;
-  username?: string;
-  is_online?: boolean;
-}
-
-// Room type definition
-interface Room {
-  id: string;
-  name?: string;
-  userCount?: number;
-}
-
-// MessageGroup component for better performance
-const MessageGroup = React.memo(
-  ({
-    group,
-    userId,
-    selectRecipient,
-  }: {
-    group: {
-      senderId: string;
-      senderUsername?: string;
-      messages: Message[];
-    };
-    userId: string;
-    selectRecipient: (userId: string) => void;
-  }) => {
-    return (
-      <div className="message-group">
-        {/* Sender info for the group */}
-        <div className="flex items-center">
-          <div
-            className={`h-6 w-6 flex items-center justify-center text-sm ${
-              group.senderId === userId ? "bg-orange-600/40" : "bg-green-600/40"
-            } mr-2`}
-          >
-            {(group.senderUsername || group.senderId).charAt(0).toUpperCase()}
-          </div>
-          <span
-            className={`text-sm font-medium ${
-              group.senderId === userId
-                ? "text-gray-300/70"
-                : "text-gray-200 hover:text-white hover:underline cursor-pointer"
-            }`}
-            onClick={() =>
-              group.senderId !== userId && selectRecipient(group.senderId)
-            }
-          >
-            {group.senderId === userId
-              ? "You"
-              : group.senderUsername || group.senderId}
-          </span>
-          <span className="text-xs text-gray-400 ml-2 align-bottom">
-            {new Date(group.messages[0].timestamp).toLocaleTimeString()}
-          </span>
-        </div>
-
-        {/* Messages from this sender */}
-        <div className="pl-7 space-y-1.5 mt-1">
-          {group.messages.map((msg) => (
-            <div key={msg.id} className="flex flex-col">
-              <div
-                className={`px-3 py-2 inline-block max-w-[85%] ${
-                  msg.senderId === userId
-                    ? "bg-orange-600/30 text-white"
-                    : "bg-gray-700/50 text-gray-100"
-                }`}
-              >
-                {msg.message}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  },
-  // Custom comparison function to ensure component updates when needed
-  (prevProps, nextProps) => {
-    // Re-render if there are new messages in the group
-    if (prevProps.group.messages.length !== nextProps.group.messages.length) {
-      return false;
-    }
-    // Re-render if the last message ID is different
-    if (
-      prevProps.group.messages[prevProps.group.messages.length - 1]?.id !==
-      nextProps.group.messages[nextProps.group.messages.length - 1]?.id
-    ) {
-      return false;
-    }
-    return true;
-  }
-);
-
-// MessageInput component to prevent re-renders of the entire app when typing
-const MessageInput = React.memo(
-  ({ onSendMessage }: { onSendMessage: (message: string) => void }) => {
-    const [message, setMessage] = useState("");
-
-    const handleSubmit = (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!message.trim()) return;
-      onSendMessage(message);
-      setMessage("");
-    };
-
-    return (
-      <form
-        onSubmit={handleSubmit}
-        className="p-3 border-t border-gray-800 flex-shrink-0 bg-gray-900"
-      >
-        <div className="flex space-x-2">
-          <input
-            type="text"
-            placeholder="Type a message..."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            className="flex-1 p-2 border bg-gray-800 border-gray-700 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
-          />
-          <button
-            type="submit"
-            className="px-6 py-2 bg-orange-600 text-white hover:bg-orange-700 transition-colors"
-          >
-            Send
-          </button>
-        </div>
-      </form>
-    );
-  }
-);
+import { Message, MessageGroup, User, Room } from "./types";
+import {
+  generateUserCredentials,
+  initialUserId,
+  initialToken,
+} from "./utils/userCredentials";
+import MessageGroupComponent from "./components/chat/MessageGroup";
+import MessageInput from "./components/chat/MessageInput";
+import LoginForm from "./components/chat/LoginForm";
+import { groupMessagesBySender } from "./utils/messageUtils";
+import {
+  filterMessages,
+  sortMessagesByTime,
+  filterRoomsBySearch,
+  filterUsersBySearch,
+} from "./utils/filterUtils";
 
 function App() {
   // User state
@@ -194,6 +43,8 @@ function App() {
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [_showOnlineUsers, setShowOnlineUsers] = useState(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  // Add mobile detection state
+  const [isMobileView, setIsMobileView] = useState(window.innerWidth < 768);
 
   // Unread messages state - track unread messages by user ID
   const [unreadMessages, setUnreadMessages] = useState<Record<string, number>>(
@@ -297,83 +148,23 @@ function App() {
 
   // Filter messages based on active tab
   const filteredMessages = useMemo(() => {
-    return messages.filter((msg) => {
-      if (activeTab === "global") return msg.type === "global";
-      if (activeTab === "direct") {
-        // Only show direct messages that involve the current user and the selected recipient
-        const isRelevantMessage =
-          msg.type === "direct" &&
-          ((msg.senderId === userId &&
-            msg.recipientId === directMessageRecipient) ||
-            (msg.senderId === directMessageRecipient &&
-              (msg.recipientId === userId || msg.recipientId === undefined)));
-
-        // Debug logging removed
-        return isRelevantMessage;
-      }
-      if (activeTab === "room")
-        return msg.type === "room" && msg.roomId === activeRoom;
-      return false;
-    });
+    return filterMessages(
+      messages,
+      activeTab,
+      userId,
+      directMessageRecipient,
+      activeRoom
+    );
   }, [messages, activeTab, userId, directMessageRecipient, activeRoom]);
 
   // Sort messages based on active tab
   const sortedMessages = useMemo(() => {
-    return [...filteredMessages].sort((a, b) => {
-      // Sort all messages by timestamp (oldest first) for all chat types
-      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
-    });
+    return sortMessagesByTime(filteredMessages);
   }, [filteredMessages]);
 
   // Group messages by sender
   const messageGroups = useMemo(() => {
-    return sortedMessages.reduce(
-      (
-        groups: Array<{
-          senderId: string;
-          senderUsername?: string;
-          messages: Message[];
-        }>,
-        msg
-      ) => {
-        // Get the last group or create a new one if none exists
-        const lastGroup = groups.length > 0 ? groups[groups.length - 1] : null;
-
-        // Check if this is a new sender or if there's a significant time gap (5+ minutes)
-        const timeDiff = lastGroup
-          ? Math.abs(
-              new Date(msg.timestamp).getTime() -
-                new Date(
-                  lastGroup.messages[lastGroup.messages.length - 1].timestamp
-                ).getTime()
-            )
-          : Infinity;
-        const isNewTimeGroup = timeDiff > 5 * 60 * 1000; // 5 minutes
-
-        // Always create a new group for short messages like "hey"
-        const isShortMessage = msg.message.trim().split(/\s+/).length <= 1;
-
-        // If this is a new sender, time gap, or short message, create a new group
-        if (
-          !lastGroup ||
-          lastGroup.senderId !== msg.senderId ||
-          isNewTimeGroup ||
-          isShortMessage
-        ) {
-          groups.push({
-            senderId: msg.senderId,
-            senderUsername: msg.senderUsername,
-            messages: [msg],
-          });
-        } else {
-          // Add to existing group if same sender and within time window
-          lastGroup.messages.push(msg);
-        }
-
-        return groups;
-      },
-      []
-    );
+    return groupMessagesBySender(sortedMessages);
   }, [sortedMessages]);
 
   // Set direct message recipient from online users list
@@ -467,17 +258,15 @@ function App() {
   );
 
   // Handle username submission
-  const handleUsernameSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!username.trim()) return;
-
+  const handleLogin = (newUsername: string) => {
     // Generate deterministic userID and token from username
     const { userId: generatedUserId, token: generatedToken } =
-      generateUserCredentials(username);
+      generateUserCredentials(newUsername);
 
     // Set the user credentials
     setUserId(generatedUserId);
     setUserToken(generatedToken);
+    setUsername(newUsername);
     setIsUsernameSet(true);
   };
 
@@ -795,79 +584,101 @@ function App() {
 
   // Filter rooms based on search input
   const filteredRooms = useMemo(() => {
-    if (!roomSearch.trim()) return availableRooms;
-
-    return availableRooms.filter((room) =>
-      (room.name || room.id).toLowerCase().includes(roomSearch.toLowerCase())
-    );
+    return filterRoomsBySearch(availableRooms, roomSearch);
   }, [availableRooms, roomSearch]);
 
   // Filter users based on search input
   const filteredUsers = useMemo(() => {
-    if (!userSearch.trim()) return onlineUsers;
-
-    return onlineUsers.filter((user) =>
-      (user.username || user.id)
-        .toLowerCase()
-        .includes(userSearch.toLowerCase())
-    );
+    return filterUsersBySearch(onlineUsers, userSearch);
   }, [onlineUsers, userSearch]);
 
   // Filter offline users based on search input
   const filteredOfflineUsers = useMemo(() => {
-    if (!userSearch.trim()) return offlineUsers;
-
-    return offlineUsers.filter((user) =>
-      (user.username || user.id)
-        .toLowerCase()
-        .includes(userSearch.toLowerCase())
-    );
+    return filterUsersBySearch(offlineUsers, userSearch);
   }, [offlineUsers, userSearch]);
 
-  // If username is not set, show username form
+  // Add resize listener to detect mobile view
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth < 768);
+      // Auto-hide sidebar on small screens
+      if (window.innerWidth < 768) {
+        setSidebarVisible(false);
+      } else {
+        setSidebarVisible(true);
+      }
+    };
+
+    window.addEventListener("resize", handleResize);
+    // Initial check
+    handleResize();
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  // If username is not set, show login form
   if (!isUsernameSet) {
-    return (
-      <div className="w-full h-screen flex flex-col items-center justify-center bg-gradient-to-b from-gray-900 to-black text-white">
-        <div className="bg-gray-800/50 p-8 border border-gray-700/50 backdrop-blur-sm">
-          <h1 className="text-3xl font-bold mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-orange-700">
-            Welcome to Game Chat
-          </h1>
-          <form
-            onSubmit={handleUsernameSubmit}
-            className="flex flex-col items-center"
-          >
-            <input
-              type="text"
-              placeholder="Enter your username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              className="px-4 py-3 mb-4 border w-72 bg-gray-700/60 border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-            />
-            <Button
-              variant={"default"}
-              type="submit"
-              className="w-full bg-orange-600 hover:bg-orange-700 text-white font-medium py-2.5 transition-colors"
-            >
-              Join Chat
-            </Button>
-          </form>
-        </div>
-      </div>
-    );
+    return <LoginForm onLogin={handleLogin} />;
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-gray-950 text-gray-100">
-      {/* Online Users Sidebar */}
+    <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-gray-950 text-gray-100">
+      {/* Mobile header/navbar - only shown on mobile */}
+      {isMobileView && (
+        <div className="flex items-center justify-between p-3 bg-gray-900 border-b border-gray-700/50">
+          <h1 className="text-xl font-bold text-white">Eternum</h1>
+          <button
+            className="p-2 text-gray-200 hover:text-white"
+            onClick={() => setSidebarVisible(!sidebarVisible)}
+          >
+            {sidebarVisible ? (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            ) : (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Online Users Sidebar - modified for responsive design */}
       {sidebarVisible && (
-        <div className="w-72 h-full bg-gray-900 text-gray-200 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-700/50">
+        <div
+          className={`${
+            isMobileView ? "absolute z-10 h-full" : "w-72 h-full"
+          } md:w-72 md:relative from-black to-gray-950 text-gray-200 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-700/50`}
+        >
           {/* Sidebar Header */}
-          <div className="p-4 border-b border-gray-700/40 bg-gray-900/80">
+          <div className="p-4 border-b border-gray-900/40 from-black to-gray-950">
             <h1 className="text-xl font-bold text-white flex items-center">
-              <span className="bg-gradient-to-r from-orange-500 to-orange-600 bg-clip-text text-transparent">
-                Game Chat
-              </span>
+              <span>Eternum</span>
               <button
                 className="text-xl ml-auto hover:text-gray-400 transition-colors"
                 onClick={() => setSidebarVisible(false)}
@@ -878,7 +689,7 @@ function App() {
           </div>
 
           {/* Rooms Section */}
-          <div className="px-4 py-3 border-b border-gray-700/40">
+          <div className="px-4 py-3 border-b border-gray-900/40">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-md font-bold text-white">Rooms</h2>
               <span className="bg-orange-600/60 px-2 py-0.5 text-xs font-medium">
@@ -946,7 +757,7 @@ function App() {
                   {filteredRooms.map((room) => (
                     <li
                       key={room.id}
-                      className={`flex items-center px-3 py-2 cursor-pointer transition-colors ${
+                      className={`flex items-center px-2 py-1 cursor-pointer transition-colors ${
                         room.id === activeRoom
                           ? "bg-orange-600/20 border-l-2 border-orange-500"
                           : "hover:bg-gray-800/50"
@@ -988,7 +799,7 @@ function App() {
                 placeholder="Join or Create Room"
                 value={newRoomId}
                 onChange={(e) => setNewRoomId(e.target.value)}
-                className="flex-1 p-2 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                className="flex-1 p-2 text-sm border from-black to-gray-950 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <button
                 type="submit"
@@ -1015,7 +826,7 @@ function App() {
                 placeholder="Search users..."
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full p-2 pl-8 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                className="w-full p-2 pl-8 text-sm border from-black to-gray-950 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1076,7 +887,7 @@ function App() {
                         {filteredUsers.map((user) => (
                           <li
                             key={user.id}
-                            className={`flex items-center px-3 py-2 cursor-pointer transition-colors ${
+                            className={`flex items-center px-2 py-1 cursor-pointer transition-colors ${
                               user.id === userId
                                 ? "bg-orange-600/20 border-l-2 border-orange-500"
                                 : user.id === directMessageRecipient
@@ -1093,7 +904,7 @@ function App() {
                                 "?"
                               ).toUpperCase()}
                             </div>
-                            <span className="text-sm truncate font-medium">
+                            <span className="text-sm truncate font-medium rounded">
                               {user.username || user.id}{" "}
                               {user.id === userId && "(You)"}
                             </span>
@@ -1157,41 +968,71 @@ function App() {
       )}
 
       {/* Main Chat Area */}
-      <div className="flex flex-col flex-grow h-full overflow-hidden">
+      <div
+        className={`flex flex-col flex-grow h-full ${
+          isMobileView && sidebarVisible ? "hidden" : "flex"
+        } md:flex overflow-hidden`}
+      >
         {/* Chat Header */}
-        <div className="bg-gray-900 text-white p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-700/50 shadow-sm">
-          <h1 className="text-xl font-bold">
-            {activeTab === "global"
-              ? "Global Chat"
-              : activeTab === "direct" && directMessageRecipient
-              ? `Chat with ${
-                  onlineUsers.find((user) => user.id === directMessageRecipient)
-                    ?.username || directMessageRecipient
-                }`
-              : activeTab === "room" && activeRoom
-              ? `Room: ${
-                  availableRooms.find((room) => room.id === activeRoom)?.name ||
-                  activeRoom
-                }`
-              : "Game Chat"}
-          </h1>
-          <p className="text-gray-400">
-            Logged in as:{" "}
-            <span className="text-orange-300 font-medium">{username}</span>{" "}
-          </p>
-          <div className="flex gap-2">
-            {!sidebarVisible && (
-              <Button
-                variant={"outline"}
-                className="px-4 py-2 bg-gray-800 border-gray-600 text-white hover:bg-gray-700 transition-colors"
+        <div className="from-black text-white p-2 md:p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-700/50 shadow-sm">
+          <div className="flex items-center">
+            {!isMobileView && !sidebarVisible && (
+              <button
+                className="mr-3 text-gray-300 hover:text-white"
                 onClick={() => setSidebarVisible(true)}
               >
-                Show Users
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 12h16M4 18h16"
+                  />
+                </svg>
+              </button>
+            )}
+            <h1 className="text-lg md:text-xl font-bold truncate">
+              {activeTab === "global"
+                ? "Global Chat"
+                : activeTab === "direct" && directMessageRecipient
+                ? `Chat with ${
+                    onlineUsers.find(
+                      (user) => user.id === directMessageRecipient
+                    )?.username || directMessageRecipient
+                  }`
+                : activeTab === "room" && activeRoom
+                ? `Room: ${
+                    availableRooms.find((room) => room.id === activeRoom)
+                      ?.name || activeRoom
+                  }`
+                : "Game Chat"}
+            </h1>
+          </div>
+
+          <div className="flex gap-2 items-center">
+            {!isMobileView && (
+              <p className="text-gray-400 hidden sm:block">
+                <span className="text-orange-300 font-medium">{username}</span>
+              </p>
+            )}
+            {!isMobileView && !sidebarVisible && (
+              <Button
+                variant={"outline"}
+                className="px-2 md:px-4 py-1 md:py-2 text-xs md:text-sm bg-gray-800 border-gray-600 text-white hover:bg-gray-700 transition-colors"
+                onClick={() => setSidebarVisible(true)}
+              >
+                Users
               </Button>
             )}
             <Button
               variant={"destructive"}
-              className="bg-red-600 hover:bg-red-700 transition-colors"
+              className="px-2 md:px-4 py-1 md:py-2 text-xs md:text-sm bg-red-600 hover:bg-red-700 transition-colors"
               onClick={() => {
                 setIsUsernameSet(false);
                 setUsername("");
@@ -1210,14 +1051,14 @@ function App() {
 
         {/* Messages display */}
         <div
-          className={`flex-1 overflow-y-auto p-4 flex flex-col bg-gradient-to-b from-gray-950 to-gray-900`}
+          className={`flex-1 overflow-y-auto p-2 md:p-4 flex flex-col bg-gradient-to-b from-black to-gray-950`}
           ref={chatContainerRef}
         >
           {filteredMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
-                className="h-12 w-12 mb-2 text-gray-600"
+                className="h-10 w-10 md:h-12 md:w-12 mb-2 text-gray-600"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -1236,14 +1077,14 @@ function App() {
               {/* Spacer to push content to bottom when there are few messages */}
               <div className="flex-grow" />
 
-              <div className="space-y-6 pb-2">
+              <div className="space-y-4 md:space-y-6 pb-2">
                 {messageGroups.map((group, groupIndex) => {
                   // Create a unique key based on the group's first message id and index
                   const groupKey = `${
                     group.messages[0]?.id || "empty"
                   }-${groupIndex}`;
                   return (
-                    <MessageGroup
+                    <MessageGroupComponent
                       key={groupKey}
                       group={group}
                       userId={userId}
