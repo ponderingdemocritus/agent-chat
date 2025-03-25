@@ -19,6 +19,15 @@ import {
   filterRoomsBySearch,
   filterUsersBySearch,
 } from "./utils/filterUtils";
+import {
+  useDirectMessageEvents,
+  useRoomMessageEvents,
+  useGlobalMessageEvents,
+  useUserEvents,
+  useRoomEvents,
+  useConnectionEvents,
+  useInitialDataEvents,
+} from "./hooks/useSocketEvents";
 
 function App() {
   // User state
@@ -27,12 +36,15 @@ function App() {
   const [username, setUsername] = useState<string>("");
   const [isUsernameSet, setIsUsernameSet] = useState<boolean>(false);
 
+  // Initialize chat client after username is set
+  const chatClient = useMemo(() => {
+    if (!isUsernameSet) return null;
+    console.log("Initializing chat client");
+    return new ChatClient(userToken, username);
+  }, [userToken, username, isUsernameSet]);
+
   // Chat state
-  const [chatClient, setChatClient] = useState<ChatClient | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [activeTab, setActiveTab] = useState<"global" | "direct" | "room">(
-    "global"
-  );
   const [directMessageRecipient, setDirectMessageRecipient] = useState("");
   const [activeRoom, setActiveRoom] = useState("");
   const [newRoomId, setNewRoomId] = useState("");
@@ -41,10 +53,15 @@ function App() {
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [offlineUsers, setOfflineUsers] = useState<User[]>([]);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
-  const [_showOnlineUsers, setShowOnlineUsers] = useState(false);
+
   const [sidebarVisible, setSidebarVisible] = useState(true);
   // Add mobile detection state
   const [isMobileView, setIsMobileView] = useState(window.innerWidth < 768);
+
+  // Add loading states
+  const [isLoadingRooms, setIsLoadingRooms] = useState(true);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
 
   // Unread messages state - track unread messages by user ID
   const [unreadMessages, setUnreadMessages] = useState<Record<string, number>>(
@@ -101,7 +118,7 @@ function App() {
   useEffect(() => {
     console.log("Messages updated, triggering scroll");
     scrollToBottom();
-  }, [messages, activeTab, scrollToBottom]);
+  }, [messages, scrollToBottom]);
 
   // Add a message to the state with optimistic update for better UX
   const addMessage = useCallback(
@@ -148,14 +165,8 @@ function App() {
 
   // Filter messages based on active tab
   const filteredMessages = useMemo(() => {
-    return filterMessages(
-      messages,
-      activeTab,
-      userId,
-      directMessageRecipient,
-      activeRoom
-    );
-  }, [messages, activeTab, userId, directMessageRecipient, activeRoom]);
+    return filterMessages(messages, userId, directMessageRecipient, activeRoom);
+  }, [messages, userId, directMessageRecipient, activeRoom]);
 
   // Sort messages based on active tab
   const sortedMessages = useMemo(() => {
@@ -169,30 +180,48 @@ function App() {
 
   // Set direct message recipient from online users list
   const selectRecipient = useCallback(
-    (userId: string) => {
-      console.log(`Selecting recipient: ${userId}`);
-      setDirectMessageRecipient(userId);
-      setActiveTab("direct");
-      setShowOnlineUsers(false);
+    (recipientId: string) => {
+      console.log(`Selecting recipient: ${recipientId}`);
+
+      // Show loading state immediately
+      setIsLoadingMessages(true);
+
+      // Set recipient immediately
+      setDirectMessageRecipient(recipientId);
 
       // Clear unread messages for this user
       setUnreadMessages((prev) => ({
         ...prev,
-        [userId]: 0,
+        [recipientId]: 0,
       }));
+
+      console.log(chatClient);
 
       // Request message history with this user
       if (chatClient) {
-        console.log(`Requesting direct message history with ${userId}`);
-        chatClient.getDirectMessageHistory(userId);
+        console.log(`Requesting direct message history with ${recipientId}`);
+
+        // Use requestAnimationFrame to ensure UI updates before sending socket request
+        window.requestAnimationFrame(() => {
+          chatClient.getDirectMessageHistory(recipientId);
+        });
+
+        // Set a safety timeout to clear loading state if no response
+        const safetyTimeout = setTimeout(() => {
+          setIsLoadingMessages(false);
+        }, 5000);
+
+        return () => clearTimeout(safetyTimeout);
+      } else {
+        // No chat client, clear loading state
+        setIsLoadingMessages(false);
       }
     },
     [
       chatClient,
       setDirectMessageRecipient,
-      setActiveTab,
-      setShowOnlineUsers,
       setUnreadMessages,
+      setIsLoadingMessages,
     ]
   );
 
@@ -201,53 +230,44 @@ function App() {
     (message: string) => {
       if (!chatClient) return;
 
-      switch (activeTab) {
-        case "global":
-          chatClient.sendGlobalMessage(message);
-          // Add to our local messages for immediate feedback
-          addMessage({
-            id: Date.now().toString(),
-            senderId: userId,
-            senderUsername: username,
-            message: message,
-            timestamp: new Date(),
-            type: "global",
-          });
-          break;
-        case "direct":
-          if (directMessageRecipient) {
-            chatClient.sendDirectMessage(directMessageRecipient, message);
-            // Add to our local messages for immediate feedback
-            addMessage({
-              id: Date.now().toString(),
-              senderId: userId,
-              senderUsername: username,
-              recipientId: directMessageRecipient,
-              message: message,
-              timestamp: new Date(),
-              type: "direct",
-            });
-          }
-          break;
-        case "room":
-          if (activeRoom) {
-            chatClient.sendRoomMessage(activeRoom, message);
-            // Add to our local messages for immediate feedback
-            addMessage({
-              id: Date.now().toString(),
-              senderId: userId,
-              senderUsername: username,
-              message: message,
-              timestamp: new Date(),
-              type: "room",
-              roomId: activeRoom,
-            });
-          }
-          break;
+      if (directMessageRecipient) {
+        chatClient.sendDirectMessage(directMessageRecipient, message);
+        // Add to our local messages for immediate feedback
+        addMessage({
+          id: Date.now().toString(),
+          senderId: userId,
+          senderUsername: username,
+          recipientId: directMessageRecipient,
+          message: message,
+          timestamp: new Date(),
+          type: "direct",
+        });
+      } else if (activeRoom) {
+        chatClient.sendRoomMessage(activeRoom, message);
+        // Add to our local messages for immediate feedback
+        addMessage({
+          id: Date.now().toString(),
+          senderId: userId,
+          senderUsername: username,
+          message: message,
+          timestamp: new Date(),
+          type: "room",
+          roomId: activeRoom,
+        });
+      } else {
+        chatClient.sendGlobalMessage(message);
+        // Add to our local messages for immediate feedback
+        addMessage({
+          id: Date.now().toString(),
+          senderId: userId,
+          senderUsername: username,
+          message: message,
+          timestamp: new Date(),
+          type: "global",
+        });
       }
     },
     [
-      activeTab,
       chatClient,
       directMessageRecipient,
       activeRoom,
@@ -270,254 +290,66 @@ function App() {
     setIsUsernameSet(true);
   };
 
-  // Initialize chat client after username is set
+  // Setup chat event handlers
+  useInitialDataEvents(
+    chatClient,
+    setAvailableRooms,
+    setOnlineUsers,
+    setOfflineUsers,
+    setMessages,
+    setIsLoadingRooms,
+    setIsLoadingUsers,
+    setIsLoadingMessages
+  );
+
+  useDirectMessageEvents(
+    chatClient,
+    userId,
+    directMessageRecipient,
+    addMessage,
+    setUnreadMessages,
+    setIsLoadingMessages,
+    setMessages
+  );
+
+  useRoomMessageEvents(
+    chatClient,
+    addMessage,
+    setIsLoadingMessages,
+    setMessages
+  );
+
+  useGlobalMessageEvents(chatClient, addMessage, setMessages);
+
+  useUserEvents(
+    chatClient,
+    setOnlineUsers,
+    setOfflineUsers,
+    setIsLoadingUsers,
+    onlineUsers
+  );
+
+  useRoomEvents(chatClient, setAvailableRooms, setIsLoadingRooms);
+
+  useConnectionEvents(chatClient);
+
+  // Request initial data once (after a short delay to ensure connection is ready)
   useEffect(() => {
-    if (!isUsernameSet) return;
-
-    console.log("Initializing chat client");
-    let client: ChatClient | null = new ChatClient(userToken, username);
-    setChatClient(client);
-
-    // Custom event listeners for our UI
-    const handleDirectMessage = ({
-      senderId,
-      senderUsername,
-      recipientId,
-      message,
-      timestamp,
-    }: any) => {
-      console.log(
-        `Received direct message from ${senderId} (${senderUsername}) to ${
-          recipientId || userId
-        }: ${message}`
-      );
-
-      // If recipientId is not provided, it's a message to the current user
-      const actualRecipientId = recipientId || userId;
-
-      addMessage({
-        id: Date.now().toString(),
-        senderId,
-        senderUsername,
-        recipientId: actualRecipientId,
-        message,
-        timestamp: timestamp || new Date(),
-        type: "direct",
-      });
-
-      // If this is a message TO the current user FROM someone else,
-      // and we're not currently viewing that conversation, increment unread count
-      if (
-        senderId !== userId &&
-        actualRecipientId === userId &&
-        directMessageRecipient !== senderId
-      ) {
-        setUnreadMessages((prev) => ({
-          ...prev,
-          [senderId]: (prev[senderId] || 0) + 1,
-        }));
-      }
-    };
-
-    const handleRoomMessage = ({
-      senderId,
-      senderUsername,
-      roomId,
-      message,
-      timestamp,
-    }: any) => {
-      addMessage({
-        id: Date.now().toString(),
-        senderId,
-        senderUsername,
-        message,
-        timestamp: timestamp || new Date(),
-        type: "room",
-        roomId,
-      });
-    };
-
-    const handleGlobalMessage = ({
-      senderId,
-      senderUsername,
-      message,
-      timestamp,
-    }: any) => {
-      addMessage({
-        id: Date.now().toString(),
-        senderId,
-        senderUsername,
-        message,
-        timestamp: timestamp || new Date(),
-        type: "global",
-      });
-    };
-
-    // Handle online users updates
-    const handleOnlineUsers = (users: User[]) => {
-      console.log("Received online users:", users);
-      setOnlineUsers(users);
-    };
-
-    // Handle user lists (both online and offline)
-    const handleUserLists = ({
-      onlineUsers,
-      offlineUsers,
-    }: {
-      onlineUsers: User[];
-      offlineUsers: User[];
-    }) => {
-      console.log(
-        `Received user lists: ${onlineUsers.length} online, ${offlineUsers.length} offline`
-      );
-      setOnlineUsers(onlineUsers);
-      setOfflineUsers(offlineUsers);
-    };
-
-    // Handle available rooms updates
-    const handleAvailableRooms = (rooms: Room[]) => {
-      setAvailableRooms(rooms);
-    };
-
-    // Monitor connection status
-    client.socket.on("connect", () => {
-      console.log("Socket connected with ID:", client?.socket.id);
-    });
-
-    client.socket.on("disconnect", (reason) => {
-      console.log("Socket disconnected:", reason);
-    });
-
-    client.socket.on("connect_error", (error) => {
-      console.error("Connection error:", error);
-    });
-
-    // Register event handlers
-    client.socket.on("directMessage", handleDirectMessage);
-    client.socket.on("roomMessage", handleRoomMessage);
-    client.socket.on("globalMessage", handleGlobalMessage);
-    client.socket.on("onlineUsers", handleOnlineUsers);
-    client.socket.on("userLists", handleUserLists);
-    client.socket.on("availableRooms", handleAvailableRooms);
-
-    // Register history event handlers
-    client.socket.on("globalHistory", (history) => {
-      const historyMessages = history.map((msg: any) => ({
-        id: Date.now() + Math.random().toString(),
-        senderId: msg.sender_id,
-        senderUsername: msg.username,
-        message: msg.message,
-        timestamp: new Date(msg.created_at),
-        type: "global",
-      }));
-      setMessages((prev) => [...prev, ...historyMessages]);
-    });
-
-    client.socket.on(
-      "directMessageHistory",
-      ({ otherUserId, messages: historyMessages }) => {
-        console.log(
-          `Received direct message history with ${otherUserId}:`,
-          historyMessages
-        );
-
-        if (historyMessages && Array.isArray(historyMessages)) {
-          const formattedMessages = historyMessages.map((msg: any) => {
-            // Ensure we have the correct sender and recipient IDs
-            let senderId = msg.sender_id;
-            let recipientId = msg.recipient_id;
-
-            // If the message doesn't have a recipient_id, it's likely a direct message
-            // where the recipient is implied (the current user)
-            if (!recipientId && msg.room_id === null) {
-              recipientId = senderId === userId ? otherUserId : userId;
-            }
-
-            return {
-              id: msg.id || Date.now() + Math.random().toString(),
-              senderId,
-              senderUsername: msg.username,
-              recipientId,
-              message: msg.message,
-              timestamp: new Date(msg.created_at),
-              type: "direct" as const,
-            };
-          });
-
-          // Replace existing direct messages with these users
-          setMessages((prev) => {
-            // Filter out existing direct messages between these users
-            const filteredMessages = prev.filter(
-              (msg) =>
-                !(
-                  msg.type === "direct" &&
-                  ((msg.senderId === userId &&
-                    msg.recipientId === otherUserId) ||
-                    (msg.senderId === otherUserId &&
-                      (msg.recipientId === userId ||
-                        msg.recipientId === undefined)))
-                )
-            );
-
-            // Add the new history messages
-            return [...filteredMessages, ...formattedMessages];
-          });
-
-          // If we're viewing this user's messages, clear their unread count
-          if (directMessageRecipient === otherUserId) {
-            setUnreadMessages((prev) => ({
-              ...prev,
-              [otherUserId]: 0,
-            }));
-          }
-        }
-      }
-    );
-
-    client.socket.on("roomHistory", ({ roomId, messages: historyMessages }) => {
-      console.log(`Received room history for ${roomId}:`, historyMessages);
-
-      if (historyMessages && Array.isArray(historyMessages)) {
-        const formattedMessages = historyMessages.map((msg: any) => ({
-          id: msg.id || Date.now() + Math.random().toString(),
-          senderId: msg.sender_id,
-          senderUsername: msg.username,
-          message: msg.message,
-          timestamp: new Date(msg.created_at),
-          type: "room" as const,
-          roomId: msg.room_id,
-        }));
-
-        // Replace existing room messages
-        setMessages((prev) => {
-          // Filter out existing messages for this room
-          const filteredMessages = prev.filter(
-            (msg) => !(msg.type === "room" && msg.roomId === roomId)
-          );
-
-          // Add the new history messages
-          return [...filteredMessages, ...formattedMessages];
-        });
-      }
-    });
-
-    // Request initial data once (after a short delay to ensure connection is ready)
     const initTimer = setTimeout(() => {
-      if (client?.socket.connected) {
+      if (chatClient?.socket.connected) {
         console.log("Requesting initial data");
-        client.getAllUsers();
-        client.getRooms();
+        // No need to request data separately - server will send everything on connection
       }
     }, 500);
 
     // Set up an interval to periodically request online users and rooms
     const updateInterval = setInterval(() => {
-      if (client?.socket.connected) {
+      if (chatClient?.socket.connected) {
         console.log("Refreshing user and room data");
-        client.getAllUsers();
-        client.getRooms();
+        chatClient.getAllUsers();
+        chatClient.getRooms();
       }
-    }, 30000); // Request every 30 seconds (increased from 10 seconds)
+    }, 30000);
 
     return () => {
       console.log("Cleaning up chat client");
@@ -525,44 +357,26 @@ function App() {
       clearTimeout(initTimer);
       clearInterval(updateInterval);
 
-      // Clean up event listeners
-      if (client) {
-        client.socket.off("directMessage", handleDirectMessage);
-        client.socket.off("roomMessage", handleRoomMessage);
-        client.socket.off("globalMessage", handleGlobalMessage);
-        client.socket.off("globalHistory");
-        client.socket.off("directMessageHistory");
-        client.socket.off("roomHistory");
-        client.socket.off("onlineUsers", handleOnlineUsers);
-        client.socket.off("userLists", handleUserLists);
-        client.socket.off("availableRooms", handleAvailableRooms);
-        client.socket.off("connect");
-        client.socket.off("disconnect");
-        client.socket.off("connect_error");
-
-        // Disconnect socket to prevent memory leaks
-        client.socket.disconnect();
-        client = null;
+      // Disconnect socket to prevent memory leaks
+      if (chatClient) {
+        chatClient.socket.disconnect();
       }
     };
-  }, [
-    userToken,
-    username,
-    isUsernameSet,
-    userId,
-    directMessageRecipient,
-    addMessage,
-    setUnreadMessages,
-  ]); // Removed offlineUsers.length from dependencies
+  }, [chatClient]);
 
   // Join a room
   const joinRoom = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRoomId.trim() || !chatClient) return;
 
+    // Show loading state immediately
+    setIsLoadingMessages(true);
+
+    // Clear direct message recipient
+    setDirectMessageRecipient("");
+
     chatClient.joinRoom(newRoomId);
     setActiveRoom(newRoomId);
-    setActiveTab("room");
 
     // Request room history
     chatClient.getRoomHistory(newRoomId);
@@ -574,9 +388,14 @@ function App() {
   const joinRoomFromSidebar = (roomId: string) => {
     if (!chatClient) return;
 
+    // Show loading state immediately
+    setIsLoadingMessages(true);
+
+    // Clear direct message recipient
+    setDirectMessageRecipient("");
+
     chatClient.joinRoom(roomId);
     setActiveRoom(roomId);
-    setActiveTab("room");
 
     // Request room history
     chatClient.getRoomHistory(roomId);
@@ -618,6 +437,15 @@ function App() {
     };
   }, []);
 
+  // Chat Header - add content before return statement
+  const switchToGlobalChat = useCallback(() => {
+    setIsLoadingMessages(true);
+    setDirectMessageRecipient("");
+    setActiveRoom("");
+    // Global messages should already be loaded, but we'll show the spinner briefly
+    setTimeout(() => setIsLoadingMessages(false), 200);
+  }, [setDirectMessageRecipient, setActiveRoom, setIsLoadingMessages]);
+
   // If username is not set, show login form
   if (!isUsernameSet) {
     return <LoginForm onLogin={handleLogin} />;
@@ -627,7 +455,7 @@ function App() {
     <div className="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-gray-950 text-gray-100">
       {/* Mobile header/navbar - only shown on mobile */}
       {isMobileView && (
-        <div className="flex items-center justify-between p-3 bg-gray-900 border-b border-gray-700/50">
+        <div className="flex items-center justify-between p-3 bg-gray-900 border-b border-gray-900/40">
           <h1 className="text-xl font-bold text-white">Eternum</h1>
           <button
             className="p-2 text-gray-200 hover:text-white"
@@ -673,7 +501,7 @@ function App() {
         <div
           className={`${
             isMobileView ? "absolute z-10 h-full" : "w-72 h-full"
-          } md:w-72 md:relative from-black to-gray-950 text-gray-200 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-700/50`}
+          } md:w-72 md:relative from-black to-gray-950 text-gray-200 shadow-lg flex-shrink-0 flex flex-col border-r border-gray-900/40`}
         >
           {/* Sidebar Header */}
           <div className="p-4 border-b border-gray-900/40 from-black to-gray-950">
@@ -704,7 +532,7 @@ function App() {
                 placeholder="Search rooms..."
                 value={roomSearch}
                 onChange={(e) => setRoomSearch(e.target.value)}
-                className="w-full p-2 pl-8 text-sm border bg-gray-800/60 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                className="w-full p-2 pl-8 text-sm border  border-gray-900/30 roudnded text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -742,7 +570,14 @@ function App() {
             </div>
 
             <div className="overflow-y-auto max-h-40">
-              {filteredRooms.length === 0 ? (
+              {isLoadingRooms ? (
+                <div className="flex items-center justify-center py-4">
+                  <div className="animate-spin h-5 w-5 border-2 border-orange-500 rounded-full border-t-transparent"></div>
+                  <span className="ml-2 text-sm text-gray-400">
+                    Loading rooms...
+                  </span>
+                </div>
+              ) : filteredRooms.length === 0 ? (
                 roomSearch ? (
                   <p className="text-gray-400 text-center text-sm py-2">
                     No rooms match your search
@@ -799,7 +634,7 @@ function App() {
                 placeholder="Join or Create Room"
                 value={newRoomId}
                 onChange={(e) => setNewRoomId(e.target.value)}
-                className="flex-1 p-2 text-sm border from-black to-gray-950 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                className="flex-1 p-2 text-sm border from-black to-gray-950 border-gray-900/40 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <button
                 type="submit"
@@ -826,7 +661,7 @@ function App() {
                 placeholder="Search users..."
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full p-2 pl-8 text-sm border from-black to-gray-950 border-gray-600 text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
+                className="w-full p-2 pl-8 text-sm border  border-gray-900/30 roudnded text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
               />
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -864,8 +699,15 @@ function App() {
             </div>
 
             <div className="overflow-y-auto flex-1">
-              {filteredUsers.length === 0 &&
-              filteredOfflineUsers.length === 0 ? (
+              {isLoadingUsers ? (
+                <div className="flex items-center justify-center py-4">
+                  <div className="animate-spin h-5 w-5 border-2 border-orange-500 rounded-full border-t-transparent"></div>
+                  <span className="ml-2 text-sm text-gray-400">
+                    Loading users...
+                  </span>
+                </div>
+              ) : filteredUsers.length === 0 &&
+                filteredOfflineUsers.length === 0 ? (
                 userSearch ? (
                   <p className="text-gray-400 text-center text-sm py-2">
                     No users match your search
@@ -892,31 +734,38 @@ function App() {
                                 ? "bg-orange-600/20 border-l-2 border-orange-500"
                                 : user.id === directMessageRecipient
                                 ? "bg-orange-600/10 border-l-2 border-orange-400"
-                                : "hover:bg-gray-800/50"
+                                : "hover:bg-gray-800/50 hover:border-l-2 hover:border-gray-500 active:bg-orange-600/10 active:border-orange-400"
                             }`}
-                            onClick={() =>
-                              user.id !== userId && selectRecipient(user.id)
-                            }
                           >
-                            <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-orange-500/30 to-orange-600/30 mr-2">
-                              {(
-                                (user.username || user.id || "?").charAt(0) ||
-                                "?"
-                              ).toUpperCase()}
-                            </div>
-                            <span className="text-sm truncate font-medium rounded">
-                              {user.username || user.id}{" "}
-                              {user.id === userId && "(You)"}
-                            </span>
-                            {/* Status indicator */}
-                            <div className="ml-auto w-2 h-2 bg-green-500"></div>
-                            {/* Unread message notification badge */}
-                            {user.id !== userId &&
-                              unreadMessages[user.id] > 0 && (
-                                <span className="ml-1 bg-red-500 text-white text-xs font-bold px-2 py-0.5">
-                                  {unreadMessages[user.id]}
-                                </span>
-                              )}
+                            <button
+                              className="flex items-center w-full focus:outline-none"
+                              onClick={() => {
+                                if (user.id !== userId) {
+                                  selectRecipient(user.id);
+                                }
+                              }}
+                              disabled={user.id === userId}
+                            >
+                              <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-orange-500/30 to-orange-600/30 mr-2">
+                                {(
+                                  (user.username || user.id || "?").charAt(0) ||
+                                  "?"
+                                ).toUpperCase()}
+                              </div>
+                              <span className="text-sm truncate font-medium rounded">
+                                {user.username || user.id}{" "}
+                                {user.id === userId && "(You)"}
+                              </span>
+                              {/* Status indicator */}
+                              <div className="ml-auto w-2 h-2 bg-green-500"></div>
+                              {/* Unread message notification badge */}
+                              {user.id !== userId &&
+                                unreadMessages[user.id] > 0 && (
+                                  <span className="ml-1 bg-red-500 text-white text-xs font-bold px-2 py-0.5">
+                                    {unreadMessages[user.id]}
+                                  </span>
+                                )}
+                            </button>
                           </li>
                         ))}
                       </ul>
@@ -936,25 +785,32 @@ function App() {
                             className={`flex items-center px-3 py-2 cursor-pointer transition-colors opacity-60 ${
                               user.id === directMessageRecipient
                                 ? "bg-gray-800/30 border-l-2 border-gray-500"
-                                : "hover:bg-gray-800/30"
+                                : "hover:bg-gray-800/30 hover:border-l-2 hover:border-gray-600 active:bg-gray-800/50 active:border-gray-500"
                             }`}
-                            onClick={() => selectRecipient(user.id)}
                           >
-                            <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-gray-500/30 to-gray-600/30 mr-2">
-                              {(
-                                (user.username || user.id || "?").charAt(0) ||
-                                "?"
-                              ).toUpperCase()}
-                            </div>
-                            <span className="text-sm truncate font-medium text-gray-400">
-                              {user.username || user.id}
-                            </span>
-                            {/* Unread message notification badge */}
-                            {unreadMessages[user.id] > 0 && (
-                              <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5">
-                                {unreadMessages[user.id]}
+                            <button
+                              className="flex items-center w-full focus:outline-none"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                selectRecipient(user.id);
+                              }}
+                            >
+                              <div className="h-7 w-7 flex items-center justify-center text-sm bg-gradient-to-br from-gray-500/30 to-gray-600/30 mr-2">
+                                {(
+                                  (user.username || user.id || "?").charAt(0) ||
+                                  "?"
+                                ).toUpperCase()}
+                              </div>
+                              <span className="text-sm truncate font-medium text-gray-400">
+                                {user.username || user.id}
                               </span>
-                            )}
+                              {/* Unread message notification badge */}
+                              {unreadMessages[user.id] > 0 && (
+                                <span className="ml-auto bg-red-500 text-white text-xs font-bold px-2 py-0.5">
+                                  {unreadMessages[user.id]}
+                                </span>
+                              )}
+                            </button>
                           </li>
                         ))}
                       </ul>
@@ -974,7 +830,7 @@ function App() {
         } md:flex overflow-hidden`}
       >
         {/* Chat Header */}
-        <div className="from-black text-white p-2 md:p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-700/50 shadow-sm">
+        <div className="from-black text-white p-2 md:p-4 flex justify-between items-center flex-shrink-0 border-b border-gray-900/40 shadow-sm">
           <div className="flex items-center">
             {!isMobileView && !sidebarVisible && (
               <button
@@ -998,20 +854,24 @@ function App() {
               </button>
             )}
             <h1 className="text-lg md:text-xl font-bold truncate">
-              {activeTab === "global"
-                ? "Global Chat"
-                : activeTab === "direct" && directMessageRecipient
-                ? `Chat with ${
-                    onlineUsers.find(
-                      (user) => user.id === directMessageRecipient
-                    )?.username || directMessageRecipient
-                  }`
-                : activeTab === "room" && activeRoom
-                ? `Room: ${
-                    availableRooms.find((room) => room.id === activeRoom)
-                      ?.name || activeRoom
-                  }`
-                : "Game Chat"}
+              {directMessageRecipient ? (
+                `Chat with ${
+                  onlineUsers.find((user) => user.id === directMessageRecipient)
+                    ?.username || directMessageRecipient
+                }`
+              ) : activeRoom ? (
+                `Room: ${
+                  availableRooms.find((room) => room.id === activeRoom)?.name ||
+                  activeRoom
+                }`
+              ) : (
+                <span
+                  className="cursor-pointer hover:text-orange-300"
+                  onClick={switchToGlobalChat}
+                >
+                  Game Chat
+                </span>
+              )}
             </h1>
           </div>
 
@@ -1038,10 +898,14 @@ function App() {
                 setUsername("");
                 setUserId(initialUserId);
                 setUserToken(initialToken);
-                setChatClient(null);
                 setMessages([]);
-                setActiveTab("global");
+                setDirectMessageRecipient("");
+                setActiveRoom("");
                 setUnreadMessages({});
+                // Reset loading states
+                setIsLoadingRooms(true);
+                setIsLoadingUsers(true);
+                setIsLoadingMessages(true);
               }}
             >
               Logout
@@ -1054,7 +918,12 @@ function App() {
           className={`flex-1 overflow-y-auto p-2 md:p-4 flex flex-col bg-gradient-to-b from-black to-gray-950`}
           ref={chatContainerRef}
         >
-          {filteredMessages.length === 0 ? (
+          {isLoadingMessages ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <div className="animate-spin h-8 w-8 border-3 border-orange-500 rounded-full border-t-transparent mb-4"></div>
+              <p className="text-gray-400">Loading messages...</p>
+            </div>
+          ) : filteredMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1066,11 +935,17 @@ function App() {
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth={1}
+                  strokeWidth={1.5}
                   d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
                 />
               </svg>
-              <p>No messages yet. Start the conversation!</p>
+              {directMessageRecipient ? (
+                <p>No direct messages yet</p>
+              ) : activeRoom ? (
+                <p>No messages yet in this room</p>
+              ) : (
+                <p>No messages yet in Global Chat</p>
+              )}
             </div>
           ) : (
             <>

@@ -64,7 +64,11 @@ export const chatService = {
       return [];
     }
 
-    return data || [];
+    // Ensure usernames are set
+    return (data || []).map((user) => ({
+      id: user.id,
+      username: user.username || user.id,
+    }));
   },
 
   // New method to get all users (both online and offline)

@@ -1,17 +1,15 @@
 import { Message, Room, User } from "../types";
 
-// Filter messages based on active tab, user ID, and recipient
+// Filter messages based on user ID, recipient, and room
 export const filterMessages = (
   messages: Message[],
-  activeTab: "global" | "direct" | "room",
   userId: string,
   directMessageRecipient: string,
   activeRoom: string
 ): Message[] => {
   return messages.filter((msg) => {
-    if (activeTab === "global") return msg.type === "global";
-    if (activeTab === "direct") {
-      // Only show direct messages that involve the current user and the selected recipient
+    // If we have a direct message recipient, show direct messages
+    if (directMessageRecipient) {
       return (
         msg.type === "direct" &&
         ((msg.senderId === userId &&
@@ -20,9 +18,12 @@ export const filterMessages = (
             (msg.recipientId === userId || msg.recipientId === undefined)))
       );
     }
-    if (activeTab === "room")
+    // If we have an active room, show room messages
+    if (activeRoom) {
       return msg.type === "room" && msg.roomId === activeRoom;
-    return false;
+    }
+    // Otherwise show global messages
+    return msg.type === "global";
   });
 };
 

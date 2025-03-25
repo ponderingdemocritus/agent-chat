@@ -49,6 +49,19 @@ class ChatClient {
       this.getRooms();
     });
 
+    // Handle initialData event which contains combined data
+    this.socket.on("initialData", (data) => {
+      console.log("Received initial data:", data);
+      // The data handling will be done in the App component
+    });
+
+    // Handle acknowledgment of direct message history request
+    this.socket.on("directMessageHistoryRequested", ({ otherUserId }) => {
+      console.log(
+        `Server acknowledged message history request for ${otherUserId}`
+      );
+    });
+
     // Message events
     this.socket.on("directMessage", ({ senderId, recipientId, message }) => {
       console.log(`DM from ${senderId} to ${recipientId || "me"}: ${message}`);
@@ -65,8 +78,19 @@ class ChatClient {
 
     // Add listeners for online users
     this.socket.on("onlineUsers", (users) => {
-      console.log("Online users updated:", users);
+      if (users && Array.isArray(users)) {
+        console.log(
+          `Online users updated: ${users.length} users (summary only)`
+        );
+      } else {
+        console.log("Online users updated with invalid data");
+      }
       // Update UI will be handled by the component
+    });
+
+    this.socket.on("userJoined", ({ user }) => {
+      console.log(`User joined: ${user.id} (${user.username})`);
+      // The App component will handle updating the UI
     });
 
     this.socket.on("userOffline", ({ userId }) => {
@@ -110,7 +134,35 @@ class ChatClient {
   // Add method to get direct message history
   getDirectMessageHistory(otherUserId: string) {
     console.log(`Requesting direct message history with ${otherUserId}`);
-    this.socket.emit("getDirectMessageHistory", { otherUserId });
+
+    // Create a custom event that will be handled with a callback
+    const requestId = Date.now().toString();
+
+    // Define a one-time event handler to confirm the server received the request
+    this.socket.once("directMessageHistoryRequested", (data) => {
+      console.log(`Server confirmed history request for ${data.otherUserId}`);
+    });
+
+    // Make sure the socket is connected
+    if (!this.socket.connected) {
+      console.warn("Socket disconnected, reconnecting...");
+      this.socket.connect();
+
+      // Wait for connection before sending request
+      this.socket.once("connect", () => {
+        console.log("Socket reconnected, sending history request");
+        this.socket.emit("getDirectMessageHistory", {
+          otherUserId,
+          requestId,
+        });
+      });
+    } else {
+      // If already connected, send request immediately
+      this.socket.emit("getDirectMessageHistory", {
+        otherUserId,
+        requestId,
+      });
+    }
   }
 
   // Add method to get room history

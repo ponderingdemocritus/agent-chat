@@ -62,15 +62,46 @@ io.on("connection", async (socket) => {
   userSockets.set(userId, socket);
   socketUsers.set(socket.id, userId);
 
-  // Update user status and broadcast online users
+  // Update user status
   await chatService.upsertUser(userId, true, username);
-  const onlineUsers = await chatService.getOnlineUsers();
-  io.emit("onlineUsers", onlineUsers);
 
   // Join global chat and send history
   socket.join("global");
-  const globalHistory = await chatService.getGlobalChatHistory();
-  socket.emit("globalHistory", globalHistory);
+  const [globalHistory, availableRooms, allUsers] = await Promise.all([
+    chatService.getGlobalChatHistory(),
+    chatService.getAvailableRooms(),
+    chatService.getAllUsers(),
+  ]);
+
+  // Split users into online and offline, ensuring usernames are set
+  const onlineUsers = allUsers
+    .filter((user) => user.is_online)
+    .map((user) => ({
+      id: user.id,
+      username: user.username || user.id,
+    }));
+  const offlineUsers = allUsers
+    .filter((user) => !user.is_online)
+    .map((user) => ({
+      id: user.id,
+      username: user.username || user.id,
+    }));
+
+  // Send all initial data at once
+  socket.emit("initialData", {
+    globalHistory,
+    availableRooms,
+    onlineUsers,
+    offlineUsers,
+  });
+
+  // Only emit a userJoined event to other clients, not the full user list
+  socket.broadcast.emit("userJoined", {
+    user: {
+      id: userId,
+      username: username || userId,
+    },
+  });
 
   // Debug event handler
   socket.on("debug", async (data) => {
@@ -150,12 +181,20 @@ io.on("connection", async (socket) => {
   });
 
   // Direct message history handler
-  socket.on("getDirectMessageHistory", async ({ otherUserId }) => {
+  socket.on("getDirectMessageHistory", async ({ otherUserId, requestId }) => {
     console.log(
-      `User ${userId} requested direct message history with ${otherUserId}`
+      `User ${userId} requested direct message history with ${otherUserId} (requestId: ${
+        requestId || "none"
+      })`
     );
 
     try {
+      // Acknowledge receipt of the request immediately with the same requestId
+      socket.emit("directMessageHistoryRequested", {
+        otherUserId,
+        requestId: requestId || Date.now().toString(),
+      });
+
       const history = await chatService.getDirectMessageHistory(
         userId,
         otherUserId
@@ -163,10 +202,20 @@ io.on("connection", async (socket) => {
       console.log(
         `Found ${history.length} messages between ${userId} and ${otherUserId}`
       );
-      socket.emit("directMessageHistory", { otherUserId, messages: history });
+
+      // Emit with the original requestId for correlation
+      socket.emit("directMessageHistory", {
+        otherUserId,
+        messages: history,
+        requestId: requestId || Date.now().toString(),
+      });
+      console.log(`Sent message history to ${userId}`);
     } catch (error) {
       console.error("Error getting direct message history:", error);
-      socket.emit("error", { message: "Failed to get message history" });
+      socket.emit("error", {
+        message: "Failed to get message history",
+        requestId,
+      });
     }
   });
 
@@ -274,12 +323,10 @@ io.on("connection", async (socket) => {
 
       await chatService.setUserOffline(userId);
 
+      // Get updated online users and broadcast to all clients
       const onlineUsers = await chatService.getOnlineUsers();
-      io.emit("userOffline", { userId });
-      io.emit(
-        "onlineUsers",
-        onlineUsers.map((user) => user.id)
-      );
+      // Only broadcast user offline event, not the full list again
+      socket.broadcast.emit("userOffline", { userId });
     }
   });
 
