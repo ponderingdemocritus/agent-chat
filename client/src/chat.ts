@@ -62,25 +62,6 @@ class ChatClient {
       );
     });
 
-    // Message events
-    this.socket.on("directMessage", ({ senderId, recipientId, message }) => {
-      console.log(`DM from ${senderId} to ${recipientId || "me"}: ${message}`);
-      // Update UI
-    });
-    this.socket.on(
-      "roomMessage",
-      ({ senderId, senderUsername, roomId, message }) => {
-        console.log(
-          `Room message from ${senderId} (${senderUsername}) in room ${roomId}: ${message}`
-        );
-        // Update UI will be handled by the component
-      }
-    );
-    this.socket.on("globalMessage", ({ senderId, message }) => {
-      console.log(`Global message from ${senderId}: ${message}`);
-      // Update UI
-    });
-
     // Add listeners for online users
     this.socket.on("onlineUsers", (users) => {
       if (users && Array.isArray(users)) {

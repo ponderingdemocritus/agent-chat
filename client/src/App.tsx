@@ -36,11 +36,37 @@ function App() {
   const [username, setUsername] = useState<string>("");
   const [isUsernameSet, setIsUsernameSet] = useState<boolean>(false);
 
+  // Use a ref to hold the chat client instance to ensure stability across renders
+  const chatClientRef = useRef<ChatClient | null>(null);
+
   // Initialize chat client after username is set
   const chatClient = useMemo(() => {
     if (!isUsernameSet) return null;
-    console.log("Initializing chat client");
-    return new ChatClient(userToken, username);
+
+    // If we already have a client instance with the same credentials, reuse it
+    if (chatClientRef.current) {
+      // Check if credentials match, but safely access socket auth properties
+      const socketAuth = chatClientRef.current.socket.auth as {
+        token?: string;
+        username?: string;
+      };
+
+      if (socketAuth.token === userToken && socketAuth.username === username) {
+        console.log("Reusing existing chat client");
+        return chatClientRef.current;
+      }
+    }
+
+    // Cleanup any existing socket connection
+    if (chatClientRef.current) {
+      console.log("Disconnecting previous chat client");
+      chatClientRef.current.socket.disconnect();
+    }
+
+    console.log("Initializing new chat client for", username);
+    const newClient = new ChatClient(userToken, username);
+    chatClientRef.current = newClient;
+    return newClient;
   }, [userToken, username, isUsernameSet]);
 
   // Chat state

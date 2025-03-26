@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Message, User, Room } from "../types";
-import ChatClient from "../chat";
+import type ChatClient from "../chat";
 
 // Hook for handling direct message events
 export const useDirectMessageEvents = (
@@ -15,7 +15,11 @@ export const useDirectMessageEvents = (
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up directMessage event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleDirectMessage = ({
       senderId,
@@ -113,12 +117,25 @@ export const useDirectMessageEvents = (
       setIsLoadingMessages(false);
     };
 
+    // First remove any existing listeners to prevent duplicates
+    chatClient.socket.off("directMessage", handleDirectMessage);
+    chatClient.socket.off("directMessageHistory", handleDirectMessageHistory);
+
+    // Then register new listeners
     chatClient.socket.on("directMessage", handleDirectMessage);
     chatClient.socket.on("directMessageHistory", handleDirectMessageHistory);
 
+    console.log("directMessage event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("directMessage", handleDirectMessage);
-      chatClient.socket.off("directMessageHistory", handleDirectMessageHistory);
+      console.log("Cleaning up directMessage event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("directMessage", handleDirectMessage);
+        chatClient.socket.off(
+          "directMessageHistory",
+          handleDirectMessageHistory
+        );
+      }
     };
   }, [
     chatClient,
@@ -139,7 +156,11 @@ export const useRoomMessageEvents = (
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up roomMessage event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleRoomMessage = ({
       senderId,
@@ -189,12 +210,22 @@ export const useRoomMessageEvents = (
       setIsLoadingMessages(false);
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("roomMessage", handleRoomMessage);
+    chatClient.socket.off("roomHistory", handleRoomHistory);
+
+    // Register new listeners
     chatClient.socket.on("roomMessage", handleRoomMessage);
     chatClient.socket.on("roomHistory", handleRoomHistory);
 
+    console.log("roomMessage event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("roomMessage", handleRoomMessage);
-      chatClient.socket.off("roomHistory", handleRoomHistory);
+      console.log("Cleaning up roomMessage event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("roomMessage", handleRoomMessage);
+        chatClient.socket.off("roomHistory", handleRoomHistory);
+      }
     };
   }, [chatClient, addMessage, setIsLoadingMessages, setMessages]);
 };
@@ -206,7 +237,11 @@ export const useGlobalMessageEvents = (
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up globalMessage event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleGlobalMessage = ({
       senderId,
@@ -220,7 +255,8 @@ export const useGlobalMessageEvents = (
         senderUsername,
         message,
         timestamp: timestamp || new Date(),
-        type: "global",
+        type: "room",
+        roomId: "global",
       });
     };
 
@@ -236,12 +272,22 @@ export const useGlobalMessageEvents = (
       setMessages((prev: Message[]) => [...prev, ...historyMessages]);
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("globalMessage", handleGlobalMessage);
+    chatClient.socket.off("globalHistory", handleGlobalHistory);
+
+    // Register new listeners
     chatClient.socket.on("globalMessage", handleGlobalMessage);
     chatClient.socket.on("globalHistory", handleGlobalHistory);
 
+    console.log("globalMessage event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("globalMessage", handleGlobalMessage);
-      chatClient.socket.off("globalHistory", handleGlobalHistory);
+      console.log("Cleaning up globalMessage event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("globalMessage", handleGlobalMessage);
+        chatClient.socket.off("globalHistory", handleGlobalHistory);
+      }
     };
   }, [chatClient, addMessage, setMessages]);
 };
@@ -255,7 +301,11 @@ export const useUserEvents = (
   onlineUsers: User[]
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up user event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleOnlineUsers = (users: User[]) => {
       console.log("Received online users:", users.length);
@@ -311,16 +361,28 @@ export const useUserEvents = (
       setIsLoadingUsers(false);
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("onlineUsers", handleOnlineUsers);
+    chatClient.socket.off("userJoined", handleUserJoined);
+    chatClient.socket.off("userOffline", handleUserOffline);
+    chatClient.socket.off("userLists", handleUserLists);
+
+    // Register new listeners
     chatClient.socket.on("onlineUsers", handleOnlineUsers);
     chatClient.socket.on("userJoined", handleUserJoined);
     chatClient.socket.on("userOffline", handleUserOffline);
     chatClient.socket.on("userLists", handleUserLists);
 
+    console.log("User event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("onlineUsers", handleOnlineUsers);
-      chatClient.socket.off("userJoined", handleUserJoined);
-      chatClient.socket.off("userOffline", handleUserOffline);
-      chatClient.socket.off("userLists", handleUserLists);
+      console.log("Cleaning up user event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("onlineUsers", handleOnlineUsers);
+        chatClient.socket.off("userJoined", handleUserJoined);
+        chatClient.socket.off("userOffline", handleUserOffline);
+        chatClient.socket.off("userLists", handleUserLists);
+      }
     };
   }, [
     chatClient,
@@ -338,17 +400,30 @@ export const useRoomEvents = (
   setIsLoadingRooms: React.Dispatch<React.SetStateAction<boolean>>
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up room event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleAvailableRooms = (rooms: Room[]) => {
       setAvailableRooms(rooms);
       setIsLoadingRooms(false);
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("availableRooms", handleAvailableRooms);
+
+    // Register new listeners
     chatClient.socket.on("availableRooms", handleAvailableRooms);
 
+    console.log("Room event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("availableRooms", handleAvailableRooms);
+      console.log("Cleaning up room event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("availableRooms", handleAvailableRooms);
+      }
     };
   }, [chatClient, setAvailableRooms, setIsLoadingRooms]);
 };
@@ -356,7 +431,11 @@ export const useRoomEvents = (
 // Hook for handling connection events
 export const useConnectionEvents = (chatClient: ChatClient | null) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up connection event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleConnect = () => {
       console.log("Socket connected with ID:", chatClient?.socket.id);
@@ -370,14 +449,25 @@ export const useConnectionEvents = (chatClient: ChatClient | null) => {
       console.error("Connection error:", error);
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("connect", handleConnect);
+    chatClient.socket.off("disconnect", handleDisconnect);
+    chatClient.socket.off("connect_error", handleConnectError);
+
+    // Register new listeners
     chatClient.socket.on("connect", handleConnect);
     chatClient.socket.on("disconnect", handleDisconnect);
     chatClient.socket.on("connect_error", handleConnectError);
 
+    console.log("Connection event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("connect", handleConnect);
-      chatClient.socket.off("disconnect", handleDisconnect);
-      chatClient.socket.off("connect_error", handleConnectError);
+      console.log("Cleaning up connection event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("connect", handleConnect);
+        chatClient.socket.off("disconnect", handleDisconnect);
+        chatClient.socket.off("connect_error", handleConnectError);
+      }
     };
   }, [chatClient]);
 };
@@ -394,7 +484,11 @@ export const useInitialDataEvents = (
   setIsLoadingMessages: React.Dispatch<React.SetStateAction<boolean>>
 ) => {
   useEffect(() => {
-    if (!chatClient) return;
+    console.log("Setting up initialData event handlers");
+    if (!chatClient || !chatClient.socket) {
+      console.warn("ChatClient or socket is null, skipping event setup");
+      return;
+    }
 
     const handleInitialData = ({
       globalHistory,
@@ -445,10 +539,19 @@ export const useInitialDataEvents = (
       }
     };
 
+    // Remove any existing listeners to prevent duplicates
+    chatClient.socket.off("initialData", handleInitialData);
+
+    // Register new listeners
     chatClient.socket.on("initialData", handleInitialData);
 
+    console.log("initialData event handlers setup complete");
+
     return () => {
-      chatClient.socket.off("initialData", handleInitialData);
+      console.log("Cleaning up initialData event handlers");
+      if (chatClient && chatClient.socket) {
+        chatClient.socket.off("initialData", handleInitialData);
+      }
     };
   }, [
     chatClient,
