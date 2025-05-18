@@ -60,6 +60,29 @@ export const chatService = {
     }
   },
 
+  async getUserById(userId: string): Promise<User | null> {
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, username, is_online, last_seen")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        // PGRST116: "The result contains 0 rows"
+        logger.debug("getUserById", `User ${userId} not found.`);
+        return null;
+      }
+      logger.error("getUserById", `Failed to fetch user ${userId}`, error);
+      return null;
+    }
+    logger.debug(
+      "getUserById",
+      `Fetched user ${userId}: ${JSON.stringify(data)}`
+    );
+    return data;
+  },
+
   async setUserOffline(userId: string): Promise<void> {
     const { error } = await supabase
       .from("users")

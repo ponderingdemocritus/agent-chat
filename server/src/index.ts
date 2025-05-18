@@ -3,9 +3,117 @@ import { createServer } from "http";
 import { Server, Socket } from "socket.io";
 import dotenv from "dotenv";
 import { chatService } from "./services/chatService";
+import { User as DbUser } from "./services/chatService"; // Make sure this path and type are correct
 
 // Load environment variables
 dotenv.config();
+
+interface ClientUser {
+  // The structure your client UI expects for user lists
+  id: string;
+  username: string;
+}
+
+// Define the structure of users from DB for augmentation
+interface AugmentedUser extends DbUser {
+  username: string; // Ensure username is always a string
+}
+
+async function getAugmentedUserLists(
+  logger: any, // Pass your logger instance
+  chatService: any, // Pass your chatService instance
+  userSocketsMap: Map<string, Socket> // Pass the server's userSockets map
+  // socketUsersMap: Map<string, string> // socketUsersMap is implicitly handled by iterating userSocketsMap (userId -> Socket)
+): Promise<{ onlineUsers: ClientUser[]; offlineUsers: ClientUser[] }> {
+  logger.debug("getAugmentedUserLists", "Fetching and augmenting user lists.");
+  const allUsersFromDB = await chatService.getAllUsers();
+  logger.debug(
+    "getAugmentedUserLists",
+    `Got ${allUsersFromDB ? allUsersFromDB.length : 0} users from DB.`
+  );
+
+  const augmentedUsers = new Map<string, AugmentedUser>();
+
+  // 1. Populate with users from the database
+  if (allUsersFromDB) {
+    for (const dbUser of allUsersFromDB) {
+      if (!dbUser || !dbUser.id) {
+        // Defensive check
+        logger.warn(
+          "getAugmentedUserLists",
+          `Skipping invalid user from DB: ${JSON.stringify(dbUser)}`
+        );
+        continue;
+      }
+      augmentedUsers.set(dbUser.id, {
+        ...dbUser,
+        username: dbUser.username || dbUser.id, // Ensure username string
+      });
+    }
+  }
+
+  // 2. Cross-reference with active sockets (userSocketsMap: userId -> Socket)
+  userSocketsMap.forEach((socketInstance, userId) => {
+    if (!userId || !socketInstance || !socketInstance.data) {
+      // Defensive check
+      logger.warn(
+        "getAugmentedUserLists",
+        `Skipping invalid entry in userSocketsMap for userId: ${userId}`
+      );
+      return;
+    }
+    const usernameFromSocket = socketInstance.data.username || userId;
+    const existingUserEntry = augmentedUsers.get(userId);
+
+    if (existingUserEntry) {
+      // User is in DB and has an active socket. Ensure they're marked online.
+      if (!existingUserEntry.is_online) {
+        logger.debug(
+          "getAugmentedUserLists",
+          `User ${userId} (${usernameFromSocket}) from active socket was marked offline/stale in DB. Correcting to online.`
+        );
+        existingUserEntry.is_online = true;
+        existingUserEntry.last_seen = new Date().toISOString(); // Update last_seen
+      }
+      // Ensure username is up-to-date from socket data if different
+      if (existingUserEntry.username !== usernameFromSocket) {
+        logger.debug(
+          "getAugmentedUserLists",
+          `Updating username for ${userId} from socket data. Old: ${existingUserEntry.username}, New: ${usernameFromSocket}`
+        );
+        existingUserEntry.username = usernameFromSocket;
+      }
+    } else {
+      // User has an active socket but wasn't in the DB list (very new, or DB issue)
+      logger.debug(
+        "getAugmentedUserLists",
+        `User ${userId} (${usernameFromSocket}) from active socket not in DB list. Adding as online.`
+      );
+      augmentedUsers.set(userId, {
+        id: userId,
+        username: usernameFromSocket,
+        is_online: true,
+        last_seen: new Date().toISOString(),
+      });
+    }
+  });
+
+  const finalUserList = Array.from(augmentedUsers.values());
+
+  const onlineUsersList: ClientUser[] = finalUserList
+    .filter((user) => user.is_online)
+    .map((u) => ({ id: u.id, username: u.username || u.id }));
+
+  const offlineUsersList: ClientUser[] = finalUserList
+    .filter((user) => !user.is_online)
+    .map((u) => ({ id: u.id, username: u.username || u.id }));
+
+  logger.debug(
+    "getAugmentedUserLists",
+    `Returning ${onlineUsersList.length} online, ${offlineUsersList.length} offline users.`
+  );
+  return { onlineUsers: onlineUsersList, offlineUsers: offlineUsersList };
+}
 
 // Simple logging utility
 const logger = {
@@ -79,43 +187,39 @@ io.on("connection", async (socket) => {
   userSockets.set(userId, socket);
   socketUsers.set(socket.id, userId);
 
-  // Update user status
+  // Update user status in DB
   await chatService.upsertUser(userId, true, username);
+  logger.info("connection", `User ${userId} status upserted to online in DB.`);
 
-  // Join global chat and send history
+  // Join global chat
   socket.join("global");
   logger.debug("connection", `User ${userId} joined global chat`);
 
-  const [globalHistory, availableRooms, allUsers] = await Promise.all([
+  // Fetch global history and available rooms (these don't depend on the current user list state)
+  const [globalHistory, availableRooms] = await Promise.all([
     chatService.getGlobalChatHistory(),
     chatService.getAvailableRooms(),
-    chatService.getAllUsers(),
   ]);
 
-  // Split users into online and offline, ensuring usernames are set
-  const onlineUsers = allUsers
-    .filter((user) => user.is_online)
-    .map((user) => ({
-      id: user.id,
-      username: user.username || user.id,
-    }));
-  const offlineUsers = allUsers
-    .filter((user) => !user.is_online)
-    .map((user) => ({
-      id: user.id,
-      username: user.username || user.id,
-    }));
+  // Generate the user lists using the augmented function for the connecting user's initialData
+  const { onlineUsers: initialOnlineUsers, offlineUsers: initialOfflineUsers } =
+    await getAugmentedUserLists(logger, chatService, userSockets);
 
-  // Send all initial data at once
+  // Send all initial data at once to the connecting client
   socket.emit("initialData", {
     globalHistory,
     availableRooms,
-    onlineUsers,
-    offlineUsers,
+    onlineUsers: initialOnlineUsers,
+    offlineUsers: initialOfflineUsers,
   });
-  logger.debug("connection", `Sent initial data to user ${userId}`);
+  logger.debug(
+    "connection",
+    `Sent initial data (using augmented lists) to user ${userId}`
+  );
 
-  // Only emit a userJoined event to other clients, not the full user list
+  // Only emit a userJoined event to other clients (no change to this part)
+  // This event signals other clients to add this user, but their next full refresh
+  // (or their own initialData if they just connected) will use the augmented list.
   socket.broadcast.emit("userJoined", {
     user: {
       id: userId,
@@ -333,27 +437,37 @@ io.on("connection", async (socket) => {
 
   // Add new handler for getting all users (both online and offline)
   socket.on("getAllUsers", async () => {
-    logger.debug("getAllUsers", `User ${userId} requested all users list`);
+    const requestingUserId = socketUsers.get(socket.id); // Get ID of user making request
+    logger.debug(
+      "getAllUsers",
+      `User ${requestingUserId || socket.id} requested all users list`
+    );
     try {
-      // Get all users from the database
-      const allUsers = await chatService.getAllUsers();
+      // Use the new augmented function
+      const { onlineUsers, offlineUsers } = await getAugmentedUserLists(
+        logger,
+        chatService,
+        userSockets
+      );
 
-      // Split into online and offline users
-      const onlineUsers = allUsers.filter((user) => user.is_online);
-      const offlineUsers = allUsers.filter((user) => !user.is_online);
-
-      // Send both lists to the client
       socket.emit("userLists", {
+        // Ensure your React client listens to 'userLists' for these updates
         onlineUsers,
         offlineUsers,
       });
       logger.debug(
         "getAllUsers",
-        `Sent ${onlineUsers.length} online and ${offlineUsers.length} offline users to ${userId}`
+        `Sent ${onlineUsers.length} online and ${
+          offlineUsers.length
+        } offline users to ${requestingUserId || socket.id}`
       );
     } catch (error) {
-      logger.error("getAllUsers", `Error fetching users for ${userId}`, error);
-      socket.emit("error", { message: "Failed to fetch users" });
+      logger.error(
+        "getAllUsers",
+        `Error fetching users for ${requestingUserId || socket.id}`,
+        error
+      );
+      socket.emit("error", { message: "Failed to fetch users" }); // Generic error to client
     }
   });
 
