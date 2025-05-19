@@ -126,17 +126,55 @@ export const chatService = {
 
   // New method to get all users (both online and offline)
   async getAllUsers(): Promise<User[]> {
-    const { data, error } = await supabase
-      .from("users")
-      .select("id, username, is_online, last_seen");
+    const allUsers: User[] = [];
+    let page = 0;
+    const pageSize = 1000; // Supabase's typical max limit per query
+    let moreUsers = true;
 
-    if (error) {
-      logger.error("getAllUsers", "Failed to fetch all users", error);
-      return [];
+    logger.debug("getAllUsers", "Starting to fetch all users with pagination.");
+
+    while (moreUsers) {
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, username, is_online, last_seen")
+        .range(from, to);
+
+      if (error) {
+        logger.error(
+          "getAllUsers",
+          `Failed to fetch users (page ${page})`,
+          error
+        );
+        // Depending on desired error handling, you might throw the error
+        // or return the users fetched so far. For now, let's stop and return what we have.
+        moreUsers = false; // Stop fetching on error
+        break;
+      }
+
+      if (data && data.length > 0) {
+        allUsers.push(...data);
+        logger.debug(
+          "getAllUsers",
+          `Fetched ${data.length} users (page ${page}). Total: ${allUsers.length}`
+        );
+        if (data.length < pageSize) {
+          moreUsers = false; // Last page
+        } else {
+          page++;
+        }
+      } else {
+        moreUsers = false; // No more data
+      }
     }
 
-    logger.debug("getAllUsers", `Retrieved ${data?.length || 0} users`);
-    return data || [];
+    logger.debug(
+      "getAllUsers",
+      `Finished fetching. Retrieved ${allUsers.length} users in total.`
+    );
+    return allUsers;
   },
 
   // Direct message operations

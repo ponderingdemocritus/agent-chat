@@ -48,6 +48,7 @@ async function getAugmentedUserLists(
       augmentedUsers.set(dbUser.id, {
         ...dbUser,
         username: dbUser.username || dbUser.id, // Ensure username string
+        is_online: false, // Assume offline initially, will be corrected if socket exists
       });
     }
   }
