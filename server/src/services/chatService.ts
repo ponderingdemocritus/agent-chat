@@ -1,4 +1,5 @@
 import { supabase } from "../config/supabase";
+import { isUserBlocked } from "../config/blocklist";
 
 // Types for our database models
 export interface Message {
@@ -183,6 +184,15 @@ export const chatService = {
     recipientId: string,
     message: string
   ): Promise<Message | null> {
+    // Check if sender is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "saveDirectMessage",
+        `Blocked user ${senderId} attempted to send a direct message to ${recipientId}`
+      );
+      return null;
+    }
+
     const { data, error } = await supabase
       .from("messages")
       .insert({
@@ -298,6 +308,15 @@ export const chatService = {
     senderId: string,
     message: string
   ): Promise<Message | null> {
+    // Check if sender is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "saveGlobalMessage",
+        `Blocked user ${senderId} attempted to send a global message`
+      );
+      return null;
+    }
+
     const { data, error } = await supabase
       .from("messages")
       .insert({
@@ -365,6 +384,15 @@ export const chatService = {
     roomId: string,
     message: string
   ): Promise<Message | null> {
+    // Check if sender is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "saveRoomMessage",
+        `Blocked user ${senderId} attempted to send a message to room ${roomId}`
+      );
+      return null;
+    }
+
     const { data, error } = await supabase
       .from("messages")
       .insert({

@@ -4,6 +4,12 @@ import { Server, Socket } from "socket.io";
 import dotenv from "dotenv";
 import { chatService } from "./services/chatService";
 import { User as DbUser } from "./services/chatService"; // Make sure this path and type are correct
+import {
+  isUserBlocked,
+  blockUser,
+  unblockUser,
+  getBlockedUsers,
+} from "./config/blocklist";
 
 // Load environment variables
 dotenv.config();
@@ -134,6 +140,53 @@ const logger = {
 // Create Express app
 const app = express();
 
+// Add JSON middleware for parsing request bodies
+app.use(express.json());
+
+// Admin endpoints for blocklist management
+// Note: In production, these should be protected with authentication
+app.post("/admin/block/:userId", (req, res) => {
+  const { userId } = req.params;
+  const { reason } = req.body;
+
+  blockUser(userId, reason);
+  logger.info(
+    "admin",
+    `User ${userId} has been blocked. Reason: ${reason || "No reason provided"}`
+  );
+
+  // Disconnect the user if they're currently connected
+  const userSocket = userSockets.get(userId);
+  if (userSocket) {
+    userSocket.emit("error", {
+      message: "You have been blocked from this service",
+      type: "blocked",
+    });
+    userSocket.disconnect(true);
+  }
+
+  res.json({ success: true, message: `User ${userId} has been blocked` });
+});
+
+app.delete("/admin/block/:userId", (req, res) => {
+  const { userId } = req.params;
+
+  unblockUser(userId);
+  logger.info("admin", `User ${userId} has been unblocked`);
+
+  res.json({ success: true, message: `User ${userId} has been unblocked` });
+});
+
+app.get("/admin/blocklist", (req, res) => {
+  const blockedUsers = getBlockedUsers();
+  res.json({ blockedUsers });
+});
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", blockedUsersCount: getBlockedUsers().length });
+});
+
 // In-memory socket mappings
 const userSockets = new Map<string, Socket>(); // userId -> socket
 const socketUsers = new Map<string, string>(); // socketId -> userId
@@ -183,6 +236,17 @@ io.on("connection", async (socket) => {
     "connection",
     `User connected: ${socket.id} (User: ${userId}, Username: ${username})`
   );
+
+  // Check if user is blocked
+  if (isUserBlocked(userId)) {
+    logger.error("connection", `Blocked user ${userId} attempted to connect`);
+    socket.emit("error", {
+      message: "You are blocked from this service",
+      type: "blocked",
+    });
+    socket.disconnect(true);
+    return;
+  }
 
   // Store socket mapping
   userSockets.set(userId, socket);
@@ -275,6 +339,19 @@ io.on("connection", async (socket) => {
       `User ${senderId} sending message to ${recipientId}`
     );
 
+    // Check if user is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "directMessage",
+        `Blocked user ${senderId} attempted to send a direct message`
+      );
+      socket.emit("error", {
+        message: "You are blocked from sending messages",
+        type: "blocked",
+      });
+      return;
+    }
+
     try {
       // Save message to database
       const savedMessage = await chatService.saveDirectMessage(
@@ -282,6 +359,15 @@ io.on("connection", async (socket) => {
         recipientId,
         message
       );
+
+      if (!savedMessage) {
+        // Message was not saved (could be due to blocklist or other error)
+        socket.emit("error", {
+          message: "Failed to send message",
+          type: "message_failed",
+        });
+        return;
+      }
 
       // Forward to recipient if online
       const recipientSocket = findSocketByUserId(recipientId);
@@ -374,7 +460,32 @@ io.on("connection", async (socket) => {
       `User ${senderId} sending message to room ${roomId}`
     );
 
-    await chatService.saveRoomMessage(senderId, roomId, message);
+    // Check if user is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "roomMessage",
+        `Blocked user ${senderId} attempted to send a room message`
+      );
+      socket.emit("error", {
+        message: "You are blocked from sending messages",
+        type: "blocked",
+      });
+      return;
+    }
+
+    const savedMessage = await chatService.saveRoomMessage(
+      senderId,
+      roomId,
+      message
+    );
+
+    if (!savedMessage) {
+      socket.emit("error", {
+        message: "Failed to send message",
+        type: "message_failed",
+      });
+      return;
+    }
 
     io.to(roomId).emit("roomMessage", {
       senderId,
@@ -410,7 +521,28 @@ io.on("connection", async (socket) => {
     const senderUsername = socket.data.username;
     logger.debug("globalMessage", `User ${senderId} sending global message`);
 
-    await chatService.saveGlobalMessage(senderId, message);
+    // Check if user is blocked
+    if (isUserBlocked(senderId)) {
+      logger.error(
+        "globalMessage",
+        `Blocked user ${senderId} attempted to send a global message`
+      );
+      socket.emit("error", {
+        message: "You are blocked from sending messages",
+        type: "blocked",
+      });
+      return;
+    }
+
+    const savedMessage = await chatService.saveGlobalMessage(senderId, message);
+
+    if (!savedMessage) {
+      socket.emit("error", {
+        message: "Failed to send message",
+        type: "message_failed",
+      });
+      return;
+    }
 
     const messageData = {
       senderId,

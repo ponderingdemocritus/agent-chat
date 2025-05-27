@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run src/index.ts"
+    "dev": "bun run src/index.ts",
+    "blocklist": "bun run scripts/manage-blocklist.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -19,6 +20,7 @@
     "@supabase/supabase-js": "^2.49.1",
     "@types/express": "^5.0.0",
     "@types/socket.io": "^3.0.2",
+    "axios": "^1.7.2",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "socket.io": "^4.8.1"
