@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "dev": "bun run src/index.ts",
-    "blocklist": "bun run scripts/manage-blocklist.ts"
+    "blocklist": "bun run scripts/manage-blocklist.ts",
+    "ratelimits": "bun run scripts/manage-rate-limits.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

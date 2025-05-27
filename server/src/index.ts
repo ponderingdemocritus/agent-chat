@@ -10,6 +10,13 @@ import {
   unblockUser,
   getBlockedUsers,
 } from "./config/blocklist";
+import {
+  isRateLimited,
+  incrementMessageCount,
+  getRateLimitStatus,
+  clearRateLimit,
+  getRateLimitedUsers,
+} from "./config/rateLimiter";
 
 // Load environment variables
 dotenv.config();
@@ -182,9 +189,45 @@ app.get("/admin/blocklist", (req, res) => {
   res.json({ blockedUsers });
 });
 
+// Rate limit admin endpoints
+app.get("/admin/ratelimits", (req, res) => {
+  const rateLimitedUsers = getRateLimitedUsers();
+  res.json({ rateLimitedUsers });
+});
+
+app.get("/admin/ratelimits/:userId", (req, res) => {
+  const { userId } = req.params;
+  const status = getRateLimitStatus(userId);
+  res.json({ userId, status });
+});
+
+app.delete("/admin/ratelimits/:userId", (req, res) => {
+  const { userId } = req.params;
+  const { messageType } = req.query;
+
+  clearRateLimit(userId, messageType as string);
+  logger.info(
+    "admin",
+    `Cleared rate limits for user ${userId}${
+      messageType ? ` (${messageType})` : " (all types)"
+    }`
+  );
+
+  res.json({
+    success: true,
+    message: `Rate limits cleared for user ${userId}${
+      messageType ? ` (${messageType})` : " (all types)"
+    }`,
+  });
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", blockedUsersCount: getBlockedUsers().length });
+  res.json({
+    status: "ok",
+    blockedUsersCount: getBlockedUsers().length,
+    rateLimitedUsersCount: getRateLimitedUsers().length,
+  });
 });
 
 // In-memory socket mappings
@@ -352,6 +395,21 @@ io.on("connection", async (socket) => {
       return;
     }
 
+    // Check rate limit
+    const rateLimitCheck = isRateLimited(senderId, "direct");
+    if (rateLimitCheck.limited) {
+      logger.error(
+        "directMessage",
+        `User ${senderId} hit rate limit for direct messages`
+      );
+      socket.emit("error", {
+        message: `Rate limit exceeded. Please wait ${rateLimitCheck.retryAfter} seconds before sending another message.`,
+        type: "rate_limited",
+        retryAfter: rateLimitCheck.retryAfter,
+      });
+      return;
+    }
+
     try {
       // Save message to database
       const savedMessage = await chatService.saveDirectMessage(
@@ -368,6 +426,9 @@ io.on("connection", async (socket) => {
         });
         return;
       }
+
+      // Increment rate limit counter after successful save
+      incrementMessageCount(senderId, "direct");
 
       // Forward to recipient if online
       const recipientSocket = findSocketByUserId(recipientId);
@@ -473,6 +534,21 @@ io.on("connection", async (socket) => {
       return;
     }
 
+    // Check rate limit
+    const rateLimitCheck = isRateLimited(senderId, "room");
+    if (rateLimitCheck.limited) {
+      logger.error(
+        "roomMessage",
+        `User ${senderId} hit rate limit for room messages`
+      );
+      socket.emit("error", {
+        message: `Rate limit exceeded. Please wait ${rateLimitCheck.retryAfter} seconds before sending another message.`,
+        type: "rate_limited",
+        retryAfter: rateLimitCheck.retryAfter,
+      });
+      return;
+    }
+
     const savedMessage = await chatService.saveRoomMessage(
       senderId,
       roomId,
@@ -486,6 +562,9 @@ io.on("connection", async (socket) => {
       });
       return;
     }
+
+    // Increment rate limit counter after successful save
+    incrementMessageCount(senderId, "room");
 
     io.to(roomId).emit("roomMessage", {
       senderId,
@@ -534,6 +613,21 @@ io.on("connection", async (socket) => {
       return;
     }
 
+    // Check rate limit
+    const rateLimitCheck = isRateLimited(senderId, "global");
+    if (rateLimitCheck.limited) {
+      logger.error(
+        "globalMessage",
+        `User ${senderId} hit rate limit for global messages`
+      );
+      socket.emit("error", {
+        message: `Rate limit exceeded. Please wait ${rateLimitCheck.retryAfter} seconds before sending another message.`,
+        type: "rate_limited",
+        retryAfter: rateLimitCheck.retryAfter,
+      });
+      return;
+    }
+
     const savedMessage = await chatService.saveGlobalMessage(senderId, message);
 
     if (!savedMessage) {
@@ -543,6 +637,9 @@ io.on("connection", async (socket) => {
       });
       return;
     }
+
+    // Increment rate limit counter after successful save
+    incrementMessageCount(senderId, "global");
 
     const messageData = {
       senderId,
@@ -613,6 +710,14 @@ io.on("connection", async (socket) => {
       "getRooms",
       `Sent ${availableRooms.length} rooms to ${userId}`
     );
+  });
+
+  // Add new handler for getting rate limit status
+  socket.on("getRateLimitStatus", () => {
+    const userId = socket.data.userId;
+    const status = getRateLimitStatus(userId);
+    socket.emit("rateLimitStatus", status);
+    logger.debug("getRateLimitStatus", `Sent rate limit status to ${userId}`);
   });
 
   // Disconnection handler
